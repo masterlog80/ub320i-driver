@@ -1,0 +1,15 @@
+*.ko
+*.o
+*.mod.c
+*.cmd
+*.o.cmd
+*.mod.o
+*.mod.o.cmd
+*.symvers
+*.order
+modules.*
+Module.*
+Mkfile.*
+*.pyc
+__pycache__/
+.DS_Store
