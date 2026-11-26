@@ -556,16 +556,21 @@ static int asv5211_frontend_attach(struct dvb_usb_adapter *adap)
 {
 	struct dvb_frontend *fe;
 
-	/* Register the frontend with the DVB core */
-	fe = dvb_register_frontend(&adap->dvb_adap, &asv5211_ops);
+	/* Allocate and populate the frontend struct.
+	 * The DVB-USB v2 framework will register it later
+	 * by calling dvb_register_frontend(&adap->dvb_adap, adap->fe[0]). */
+	fe = kzalloc(sizeof(*fe), GFP_KERNEL);
 	if (!fe) {
 		dev_err(&adap_to_d(adap)->intf->dev,
-			"frontend registration failed\n");
-		return -ENODEV;
+			"frontend allocation failed\n");
+		return -ENOMEM;
 	}
 
+	memcpy(&fe->ops, &asv5211_ops, sizeof(fe->ops));
+	adap->fe[0] = fe;
+
 	dev_info(&adap_to_d(adap)->intf->dev,
-		 "ASV5211 ISDB-T frontend registered\n");
+		 "ASV5211 ISDB-T frontend allocated\n");
 
 	return 0;
 }
@@ -573,7 +578,7 @@ static int asv5211_frontend_attach(struct dvb_usb_adapter *adap)
 static void asv5211_frontend_detach(struct dvb_usb_adapter *adap)
 {
 	if (adap->fe[0]) {
-		dvb_unregister_frontend(adap->fe[0]);
+		dvb_frontend_detach(adap->fe[0]);
 		adap->fe[0] = NULL;
 	}
 }
