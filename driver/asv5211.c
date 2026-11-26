@@ -599,7 +599,7 @@ static struct dvb_frontend_ops asv5211_ops = {
 		.symbol_rate_min	= 0,
 		.symbol_rate_max	= 0,
 		.symbol_rate_tolerance	= 0,
-		.caps			= FE_CAP_QAM_AUTO | FE_HAS_TUNER,
+		.caps			= 0,
 	},
 
 	.init			= asv5211_fe_init,
@@ -629,9 +629,6 @@ static struct dvb_usb_adapter_properties asv5211_adapter_props = {
 			},
 		},
 	},
-
-	.frontend_attach	= asv5211_frontend_attach,
-	.frontend_detach	= asv5211_frontend_detach,
 };
 
 /* ------------------------------------------------------------------ */
@@ -675,6 +672,8 @@ static const struct dvb_usb_device_properties asv5211_properties = {
 	.num_adapters		= 1,
 	.adapter			= { [0] = asv5211_adapter_props },
 
+	.frontend_attach	= asv5211_frontend_attach,
+	.frontend_detach	= asv5211_frontend_detach,
 	.power_ctrl		= asv5211_power_ctrl,
 	.streaming_ctrl		= asv5211_streaming_ctrl,
 	.get_stream_config	= asv5211_get_stream_config,
