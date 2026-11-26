@@ -102,16 +102,6 @@ sudo usermod -aG video $USER
 
 Log out and back in for the group change to take effect.
 
-## Installation Details
-
-See the **[INSTALL.md](INSTALL.md)** file for a complete step-by-step guide including:
-
-- Kernel headers and build tool installation
-- `KERNEL_SRC` path explanation and examples
-- Module auto-load on boot configuration
-- Frequency offset tuning
-- Full troubleshooting section
-
 ## Userspace Driver (Alternative)
 
 If you cannot compile the kernel module, the Python userspace driver works without kernel modifications:
