@@ -31,14 +31,12 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/usb.h>
-#include <linux/usb/input.h>
 
 #include <media/rc-core.h>
 #include <media/dvb_frontend.h>
-#include <media/dvb_demux.h>
-#include <media/dvb_net.h>
-#include <media/dmxdev.h>
-#include <media/dvb_usb.h>
+/* dvb_usb.h lives in drivers/media/usb/dvb-usb-v2/ (internal kernel header)
+ * The Makefile adds -I to reach it. */
+#include "dvb_usb.h"
 
 /* ------------------------------------------------------------------ */
 /* Module parameters                                                   */
@@ -428,21 +426,21 @@ static int asv5211_fe_sleep(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int asv5211_fe_set_params(struct dvb_frontend *fe)
+static int asv5211_fe_set_frontend(struct dvb_frontend *fe)
 {
 	struct dvb_usb_device *d = fe_to_d(fe);
 	struct asv5211_state *st = d_to_priv(d);
 	u32 frequency_hz;
 	int rc = 0;
 
-	/* fe->frequency is in kHz in the DVB API v5 */
-	frequency_hz = fe->frequency * 1000;
+	/* Kernel 5.4: frequency in dtv_property_cache, in Hz for terrestrial */
+	frequency_hz = fe->dtv_property_cache.frequency;
 	if (freq_offset)
 		frequency_hz += freq_offset * 1000;
 
 	dev_dbg(&d->intf->dev,
-		"set_params: freq=%u kHz (%u Hz) delivery=%d\n",
-		fe->frequency, frequency_hz, fe->delivery_system);
+		"set_frontend: freq=%u Hz delivery=%u\n",
+		frequency_hz, fe->dtv_property_cache.delivery_system);
 
 	mutex_lock(&st->lock);
 
@@ -591,7 +589,7 @@ static struct dvb_frontend_ops asv5211_ops = {
 		.name			= "AsicEn ASV5211 ISDB-T",
 		.frequency_min_hz	= 175000000,
 		.frequency_max_hz	= 770000000,
-		.frequency_stepsize_hz	= 156250,
+		.frequency_step_hz	= 156250,
 		.frequency_tolerance_hz	= 0,
 		.symbol_rate_min	= 0,
 		.symbol_rate_max	= 0,
@@ -601,7 +599,7 @@ static struct dvb_frontend_ops asv5211_ops = {
 
 	.init			= asv5211_fe_init,
 	.sleep		= asv5211_fe_sleep,
-	.set_params	= asv5211_fe_set_params,
+	.set_frontend	= asv5211_fe_set_frontend,
 	.read_status	= asv5211_fe_read_status,
 	.read_ber	= asv5211_fe_read_ber,
 	.read_signal_strength = asv5211_fe_read_signal_strength,
@@ -670,7 +668,7 @@ static const struct dvb_usb_device_properties asv5211_properties = {
 	.download_firmware	= asv5211_download_firmware,
 
 	.num_adapters		= 1,
-	.adapter			= { &asv5211_adapter_props },
+	.adapter			= { [0] = asv5211_adapter_props },
 
 	.power_ctrl		= asv5211_power_ctrl,
 	.streaming_ctrl		= asv5211_streaming_ctrl,

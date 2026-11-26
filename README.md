@@ -52,11 +52,32 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-### 3. Build and install the kernel module
+### 3. Build the kernel module
+
+The driver uses `dvb_usb.h`, an **internal kernel header** located at
+`drivers/media/usb/dvb-usb-v2/dvb_usb.h` inside your kernel source tree.
+You must point `KERNEL_SRC` to it:
 
 ```bash
 cd driver
+
+# If kernel headers are at the default location under KDIR:
 make KDIR=/lib/modules/$(uname -r)/build
+
+# If your kernel source is elsewhere (e.g. a cross-compile or separate tree):
+make KDIR=/lib/modules/$(uname -r)/build \
+     KERNEL_SRC=/path/to/kernel/source
+```
+
+**Example for BPI-M4 Berry (Armbian 5.4.125-legacy-sunxi64):**
+```bash
+make KDIR=/lib/modules/5.4.125-legacy-sunxi64/build \
+     KERNEL_SRC=~/dvb-driver-build
+```
+
+### 3b. Install
+
+```bash
 sudo make install KDIR=/lib/modules/$(uname -r)/build
 sudo modprobe asv5211
 ```

@@ -1,13 +1,19 @@
 # udev rules for KWorld UB320-i (ASV5211) ISDB-T tuner
 #
 # Place in /etc/udev/rules.d/90-ub320i.rules
-# Run: udevadm control --reload-rules && udevadm trigger
+# Run: sudo udevadm control --reload-rules && sudo udevadm trigger
 #
-# This allows the kernel module to handle the device and ensures
-# the firmware is available when the cold device (bootloader) appears.
+# Rules below ensure the USB device is accessible by the video group
+# and that the DVB char-devices (/dev/dvb/adapterN/frontend0, etc.)
+# get correct permissions automatically via the kernel's devtmpfs.
 
 # Cold device (bootloader) — claim for firmware loading
 SUBSYSTEM=="usb", ATTR{idVendor}=="1738", ATTR{idProduct}=="5211", MODE="0660", GROUP="video"
 
 # Warm device (operational after firmware load)
 SUBSYSTEM=="usb", ATTR{idVendor}=="1b80", ATTR{idProduct}=="b320", MODE="0660", GROUP="video", ENV{ID_DVB_DEVICE}="1"
+
+# Ensure DVB adapter devices are group-readable
+# (The kernel devtmpfs creates /dev/dvb/adapterN/frontend0 automatically
+# when the module registers a frontend. This rule sets permissions.)
+SUBSYSTEM=="dvb", KERNEL=="*", MODE="0660", GROUP="video"

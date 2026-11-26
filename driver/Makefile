@@ -7,17 +7,27 @@
 #   make KDIR=/lib/modules/$(uname -r)/build
 #   sudo make install KDIR=/lib/modules/$(uname -r)/build
 #
+# NOTE: dvb_usb.h is an INTERNAL kernel header under
+#   <src>/drivers/media/usb/dvb-usb-v2/dvb_usb.h
+# The -I flag below tells the compiler where to find it.
+# On the target, set KERNEL_SRC to your kernel source tree root,
+# e.g. KERNEL_SRC=~/dvb-driver-build
+
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
+KERNEL_SRC ?= $(KDIR)
 obj-m := asv5211.o
 FW_NAME := dvb-usb-asv5211.fw
+
+# Internal header path — dvb_usb.h is NOT in uapi or public includes
+DVB_USB_INTERNAL := $(KERNEL_SRC)/drivers/media/usb/dvb-usb-v2
 
 .PHONY: all clean install modules firmware-copy
 
 all: modules
 
 modules:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(PWD) EXTRA_CFLAGS="-I$(DVB_USB_INTERNAL)" modules
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
