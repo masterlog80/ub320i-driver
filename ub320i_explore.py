@@ -67,19 +67,51 @@ def vendor_write(dev, request, value, index, data):
         return None
 
 
-def scan_requests(dev):
-    """Try all vendor control request types."""
+KNOWN_REQUESTS = {
+    0x90: "Register write (OUT) - used by ub320i_driver.py",
+    0x91: "Register read (IN) - used by ub320i_driver.py",
+    0xAB: "Firmware download segment 1-3 (OUT) - used by load_firmware.py",
+    0xAC: "Firmware download segment 4 (OUT) - used by load_firmware.py",
+}
+
+
+def scan_requests(dev, write=False):
+    """Try all vendor control request types.
+    
+    WARNING: Writing to unknown request IDs can trigger undocumented device
+    behavior including hardware resets, configuration changes, or firmware
+    operations. Read-only scanning is strongly preferred.
+    """
+    if write:
+        print("WARNING: Writing to unknown vendor requests is dangerous.")
+        print("  This may reset the device, change configuration, or trigger")
+        print("  undocumented operations. Proceed with caution.")
+        print()
+        confirm = input("  Type 'YES' to continue with write scanning: ")
+        if confirm != "YES":
+            print("Aborted.")
+            return
+    
     print("Scanning vendor control requests...")
-    print("  Format: request | DIR=OUT (write 0xAA) | DIR=IN (read 4 bytes)")
+    print("  Known requests:")
+    for req_id, desc in sorted(KNOWN_REQUESTS.items()):
+        print(f"    0x{req_id:02X} - {desc}")
+    print()
+    if write:
+        print("  Format: request | DIR=OUT (write 0xAA) | DIR=IN (read 4 bytes)")
+    else:
+        print("  Format: request | DIR=IN (read 4 bytes)")
     print()
 
     for req in range(0x10, 0xFF):
-        # Try write
-        out_result = vendor_write(dev, req, 0x0000, 0x0000, b'\xAA')
-        # Try read
-        in_result = vendor_read(dev, req, 0x0000, 0x0000, 4)
-
         status = ""
+        in_result = vendor_read(dev, req, 0x0000, 0x0000, 4)
+        
+        if write:
+            out_result = vendor_write(dev, req, 0x0000, 0x0000, b'\xAA')
+        else:
+            out_result = None
+        
         if out_result is not None and in_result is not None:
             status = "R+W"
             if in_result:
@@ -95,6 +127,10 @@ def scan_requests(dev):
         else:
             continue  # Skip dead requests
 
+        # Annotate known requests
+        if req in KNOWN_REQUESTS:
+            status += f" [KNOWN: {KNOWN_REQUESTS[req]}]"
+        
         print(f"  0x{req:02X}  ->  {status}")
         time.sleep(0.01)
 
