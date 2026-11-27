@@ -549,42 +549,7 @@ static int asv5211_fe_read_snr(struct dvb_frontend *fe, u16 *snr)
 }
 
 /* ------------------------------------------------------------------ */
-/* Frontend attach / detach                                            */
-/* ------------------------------------------------------------------ */
-
-static int asv5211_frontend_attach(struct dvb_usb_adapter *adap)
-{
-	struct dvb_frontend *fe;
-
-	/* Allocate and populate the frontend struct.
-	 * The DVB-USB v2 framework will register it later
-	 * by calling dvb_register_frontend(&adap->dvb_adap, adap->fe[0]). */
-	fe = kzalloc(sizeof(*fe), GFP_KERNEL);
-	if (!fe) {
-		dev_err(&adap_to_d(adap)->intf->dev,
-			"frontend allocation failed\n");
-		return -ENOMEM;
-	}
-
-	memcpy(&fe->ops, &asv5211_ops, sizeof(fe->ops));
-	adap->fe[0] = fe;
-
-	dev_info(&adap_to_d(adap)->intf->dev,
-		 "ASV5211 ISDB-T frontend allocated\n");
-
-	return 0;
-}
-
-static void asv5211_frontend_detach(struct dvb_usb_adapter *adap)
-{
-	if (adap->fe[0]) {
-		dvb_frontend_detach(adap->fe[0]);
-		adap->fe[0] = NULL;
-	}
-}
-
-/* ------------------------------------------------------------------ */
-/* Frontend ops table (static, for dvb_register_frontend)             */
+/* Frontend ops table                                                  */
 /* ------------------------------------------------------------------ */
 
 static struct dvb_frontend_ops asv5211_ops = {
@@ -610,6 +575,33 @@ static struct dvb_frontend_ops asv5211_ops = {
 	.read_signal_strength = asv5211_fe_read_signal_strength,
 	.read_snr	= asv5211_fe_read_snr,
 };
+
+/* ------------------------------------------------------------------ */
+/* Frontend attach                                                     */
+/* ------------------------------------------------------------------ */
+
+static int asv5211_frontend_attach(struct dvb_usb_adapter *adap)
+{
+	struct dvb_frontend *fe;
+
+	/* Allocate and populate the frontend struct.
+	 * The DVB-USB v2 framework will register it later
+	 * by calling dvb_register_frontend(&adap->dvb_adap, adap->fe[0]). */
+	fe = kzalloc(sizeof(*fe), GFP_KERNEL);
+	if (!fe) {
+		dev_err(&adap_to_d(adap)->intf->dev,
+			"frontend allocation failed\n");
+		return -ENOMEM;
+	}
+
+	memcpy(&fe->ops, &asv5211_ops, sizeof(fe->ops));
+	adap->fe[0] = fe;
+
+	dev_info(&adap_to_d(adap)->intf->dev,
+		 "ASV5211 ISDB-T frontend allocated\n");
+
+	return 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* Adapter properties                                                  */
@@ -673,7 +665,7 @@ static const struct dvb_usb_device_properties asv5211_properties = {
 	.adapter			= { [0] = asv5211_adapter_props },
 
 	.frontend_attach	= asv5211_frontend_attach,
-	.frontend_detach	= asv5211_frontend_detach,
+	.frontend_detach	= NULL,
 	.power_ctrl		= asv5211_power_ctrl,
 	.streaming_ctrl		= asv5211_streaming_ctrl,
 	.get_stream_config	= asv5211_get_stream_config,
@@ -687,6 +679,10 @@ static const struct usb_device_id asv5211_table[] = {
 	{ DVB_USB_DEVICE(USB_VID_ASICEN_WARM, USB_PID_ASICEN_WARM,
 			 &asv5211_properties,
 			 "KWorld UB320-i ISDB-T (ASV5211)",
+			 NULL) },
+	{ DVB_USB_DEVICE(USB_VID_ASICEN_COLD, USB_PID_ASICEN_COLD,
+			 &asv5211_properties,
+			 "KWorld UB320-i ISDB-T (ASV5211) (bootloader)",
 			 NULL) },
 	{ },
 };
