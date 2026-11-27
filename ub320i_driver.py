@@ -27,7 +27,7 @@ try:
     import usb.core
     import usb.util
 except ImportError:
-    print("Error: pyusb required. Install with: pip3 install pyusb")
+    print("Error: pyusb required. Install with: pip3 install pyusb", file=sys.stderr)
     sys.exit(1)
 
 # Device IDs
@@ -91,7 +91,7 @@ def read_reg(dev, reg, length=4):
             return struct.unpack('<H', bytes(data))[0]
         return bytes(data)
     except usb.core.USBError as e:
-        print(f"  Warning: read_reg(0x{reg:04X}) failed: {e}")
+        print(f"  Warning: read_reg(0x{reg:04X}) failed: {e}", file=sys.stderr)
         return None
 
 
@@ -106,7 +106,7 @@ def read_regs_block(dev, reg, count):
 
 def initialize_device(dev):
     """Initialize the device after firmware load."""
-    print("Initializing device...")
+    print("Initializing device...", file=sys.stderr)
 
     # Reset device
     write_reg(dev, REG_DEMOD_CONTROL, 0x00000001)
@@ -136,18 +136,18 @@ def initialize_device(dev):
     write_reg(dev, REG_TS_PID_FILTER, 0xFFFFFFFF)
     time.sleep(0.05)
 
-    print("  Device initialized")
+    print("  Device initialized", file=sys.stderr)
 
 
 def tune_frequency(dev, frequency_hz):
     """Tune to a specific frequency in Hz."""
     if not (ISDB_T_JAPAN_FREQ_MIN <= frequency_hz <= ISDB_T_JAPAN_FREQ_MAX):
-        print(f"  Warning: frequency {frequency_hz}Hz outside Japan ISDB-T range")
+        print(f"  Warning: frequency {frequency_hz}Hz outside Japan ISDB-T range", file=sys.stderr)
 
     # Round to nearest frequency step
     freq = round(frequency_hz / ISDB_T_JAPAN_FREQ_STEP) * ISDB_T_JAPAN_FREQ_STEP
 
-    print(f"  Tuning to {freq}Hz ({freq/1e6:.3f} MHz)...")
+    print(f"  Tuning to {freq}Hz ({freq/1e6:.3f} MHz)...", file=sys.stderr)
 
     # Set frequency (firmware uses little-endian 32-bit frequency)
     write_reg(dev, REG_TUNER_FREQ, int(freq))
@@ -164,10 +164,10 @@ def tune_frequency(dev, frequency_hz):
         if locked:
             snr = read_reg(dev, REG_DEMOD_SNR, 2)
             signal = read_reg(dev, REG_DEMOD_SIGNAL, 2)
-            print(f"  Locked! SNR={snr}, Signal={signal}")
+            print(f"  Locked! SNR={snr}, Signal={signal}", file=sys.stderr)
             return True
         else:
-            print("  No lock detected")
+            print("  No lock detected", file=sys.stderr)
             return False
     return False
 
@@ -186,13 +186,13 @@ def read_ts_data(dev, timeout_ms=1000):
             return bytes(data)
     except usb.core.USBError as e:
         if e.errno != 110:  # Ignore timeout
-            print(f"  USB read error: {e}")
+            print(f"  USB read error: {e}", file=sys.stderr)
     return None
 
 
 def scan_channels(dev, freq_min, freq_max, freq_step=1_562_500):
     """Scan for ISDB-T channels in the given frequency range."""
-    print(f"Scanning {freq_min/1e6:.1f} - {freq_max/1e6:.1f} MHz (step {freq_step/1000} kHz)...")
+    print(f"Scanning {freq_min/1e6:.1f} - {freq_max/1e6:.1f} MHz (step {freq_step/1000} kHz)...", file=sys.stderr)
 
     channels = []
     freq = freq_min
@@ -208,9 +208,9 @@ def scan_channels(dev, freq_min, freq_max, freq_step=1_562_500):
         if status and (status & 0x01):
             snr = read_reg(dev, REG_DEMOD_SNR, 2)
             channels.append((freq, snr))
-            print(f"  [{pct:.0f}%] Channel found: {freq/1e6:.3f} MHz (SNR={snr})")
+            print(f"  [{pct:.0f}%] Channel found: {freq/1e6:.3f} MHz (SNR={snr})", file=sys.stderr)
         else:
-            print(f"  [{pct:.0f}%] {freq/1e6:.3f} MHz ...")
+            print(f"  [{pct:.0f}%] {freq/1e6:.3f} MHz ...", file=sys.stderr)
 
         freq += freq_step
 
@@ -258,50 +258,50 @@ def main():
     # Convert channel number to frequency if needed
     if args.channel and not args.frequency:
         args.frequency = 473_142_857 + (args.channel - 13) * 6_000_000
-        print(f"Channel {args.channel} = {args.frequency}Hz ({args.frequency/1e6:.3f} MHz)")
+        print(f"Channel {args.channel} = {args.frequency}Hz ({args.frequency/1e6:.3f} MHz)", file=sys.stderr)
 
     # Find device
-    print(f"Looking for device {VENDOR_ID:04X}:{PRODUCT_ID:04X}...")
+    print(f"Looking for device {VENDOR_ID:04X}:{PRODUCT_ID:04X}...", file=sys.stderr)
     dev = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_ID)
 
     if dev is None:
-        print("Device not found!")
-        print("Firmware may need to be loaded first:")
-        print("  sudo python3 load_firmware.py ub320i.fw")
+        print("Device not found!", file=sys.stderr)
+        print("Firmware may need to be loaded first:", file=sys.stderr)
+        print("  sudo python3 load_firmware.py ub320i.fw", file=sys.stderr)
         return 1
 
-    print(f"Found device on bus {dev.bus} address {dev.address}")
+    print(f"Found device on bus {dev.bus} address {dev.address}", file=sys.stderr)
 
     # Claim interface
     try:
         cfg = dev.get_active_configuration()
         iface = cfg[(0, 0)]
         if dev.is_kernel_driver_active(0):
-            print("  Detaching kernel driver...")
+            print("  Detaching kernel driver...", file=sys.stderr)
             dev.detach_kernel_driver(0)
         usb.util.claim_interface(dev, iface)
     except Exception as e:
-        print(f"  Warning: could not claim interface: {e}")
-        print("  Try running with sudo")
+        print(f"  Warning: could not claim interface: {e}", file=sys.stderr)
+        print("  Try running with sudo", file=sys.stderr)
 
     # Initialize
     initialize_device(dev)
 
     if args.init_only:
-        print("Initialization complete")
+        print("Initialization complete", file=sys.stderr)
         return 0
 
     # Status mode
     if args.status:
-        print("Device Status:")
+        print("Device Status:", file=sys.stderr)
         status = read_reg(dev, REG_DEMOD_STATUS)
         snr = read_reg(dev, REG_DEMOD_SNR, 2)
         signal = read_reg(dev, REG_DEMOD_SIGNAL, 2)
         ber = read_reg(dev, REG_DEMOD_BER, 2)
-        print(f"  Status: 0x{status:08X}" if status else "  Status: unavailable")
-        print(f"  SNR: {snr}" if snr is not None else "  SNR: unavailable")
-        print(f"  Signal: {signal}" if signal is not None else "  Signal: unavailable")
-        print(f"  BER: {ber}" if ber is not None else "  BER: unavailable")
+        print(f"  Status: 0x{status:08X}" if status else "  Status: unavailable", file=sys.stderr)
+        print(f"  SNR: {snr}" if snr is not None else "  SNR: unavailable", file=sys.stderr)
+        print(f"  Signal: {signal}" if signal is not None else "  Signal: unavailable", file=sys.stderr)
+        print(f"  BER: {ber}" if ber is not None else "  BER: unavailable", file=sys.stderr)
         return 0
 
     # Scan mode
@@ -319,34 +319,34 @@ def main():
                 for freq, snr in channels:
                     ch = get_channel_number(freq)
                     f.write(f"{freq/1e6:.3f}\t{ch}\t{snr}\n")
-            print(f"\nScan results saved to {args.output}")
+            print(f"\nScan results saved to {args.output}", file=sys.stderr)
         else:
-            print(f"\nFound {len(channels)} channels:")
+            print(f"\nFound {len(channels)} channels:", file=sys.stderr)
             for freq, snr in channels:
                 ch = get_channel_number(freq)
-                print(f"  Channel {ch}: {freq/1e6:.3f} MHz (SNR={snr})")
+                print(f"  Channel {ch}: {freq/1e6:.3f} MHz (SNR={snr})", file=sys.stderr)
 
         if not channels:
-            print("No channels found. Try adjusting antenna or scan range.")
+            print("No channels found. Try adjusting antenna or scan range.", file=sys.stderr)
         return 0 if channels else 1
 
     # Capture mode
     if not args.frequency:
-        print("Error: --frequency or --channel required for capture mode")
+        print("Error: --frequency or --channel required for capture mode", file=sys.stderr)
         parser.print_help()
         return 1
 
     # Tune
     if not tune_frequency(dev, args.frequency):
-        print("Warning: tuning failed, attempting capture anyway...")
+        print("Warning: tuning failed, attempting capture anyway...", file=sys.stderr)
 
     # Open output
     outfile = None
     if args.output:
         outfile = open(args.output, 'wb')
-        print(f"Writing to {args.output}")
+        print(f"Writing to {args.output}", file=sys.stderr)
     else:
-        print("Writing to stdout (pipe to file or player)")
+        print("Writing to stdout (pipe to file or player)", file=sys.stderr)
 
     # Capture loop
     packets = 0
@@ -371,10 +371,10 @@ def main():
                 if packets % 1000 == 0:
                     elapsed = time.time() - start_time
                     rate = bytes_written / elapsed / 1024
-                    print(f"\r  {packets} packets, {bytes_written/1024/1024:.1f} MB ({rate:.1f} KB/s)", end='', flush=True)
+                    print(f"\r  {packets} packets, {bytes_written/1024/1024:.1f} MB ({rate:.1f} KB/s)", file=sys.stderr, end='', flush=True)
 
     except KeyboardInterrupt:
-        print(f"\n\nCapture stopped after {packets} packets ({bytes_written/1024/1024:.1f} MB)")
+        print(f"\n\nCapture stopped after {packets} packets ({bytes_written/1024/1024:.1f} MB)", file=sys.stderr)
 
     finally:
         stop_capture(dev)
