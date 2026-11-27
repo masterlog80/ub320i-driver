@@ -367,9 +367,9 @@ def main():
                 parser.error('--scan cannot be combined with --frequency or --channel')
             try:
                 channels = scan_channels(
-                dev,
-                args.scan_min_channel,
-                    args.scan_max_channel
+                    dev,
+                    args.scan_min_channel,
+                    args.scan_max_channel,
                 )
             except ValueError as e:
                 parser.error(str(e))
