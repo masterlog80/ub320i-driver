@@ -49,9 +49,9 @@ ISDB_T_BANDWIDTH_7MHZ = 1
 ISDB_T_BANDWIDTH_8MHZ = 2
 
 ISDB_T_ONESEG = True   # This is a 1-seg (mobile) tuner
-ISDB_T_JAPAN_FREQ_MIN = 175_000_000   # Channel 13
-ISDB_T_JAPAN_FREQ_MAX = 770_000_000   # Channel 51
-ISDB_T_JAPAN_FREQ_STEP = 156_250  # Hz
+ISDB_T_JAPAN_FREQ_MIN = 473_142_857   # Channel 13
+ISDB_T_JAPAN_FREQ_MAX = 767_142_857   # Channel 62
+ISDB_T_JAPAN_FREQ_STEP = 6_000_000  # Hz (6 MHz spacing)
 
 # Register addresses inferred from firmware analysis
 REG_TUNER_FREQ = 0x0010
@@ -222,8 +222,8 @@ def scan_channels(dev, freq_min, freq_max, freq_step=1_562_500):
 
 def get_channel_number(frequency_hz):
     """Convert frequency to Japan ISDB-T channel number."""
-    # Japan terrestrial TV channels start at 175 MHz for channel 13
-    ch_num = int((frequency_hz - 175_000_000) // 1_562_500) + 13
+    # Japan terrestrial TV: Ch13=473.142857 MHz, 6 MHz spacing
+    ch_num = round((frequency_hz - 473_142_857) / 6_000_000) + 13
     return ch_num
 
 
@@ -257,7 +257,7 @@ def main():
 
     # Convert channel number to frequency if needed
     if args.channel and not args.frequency:
-        args.frequency = 175_000_000 + (args.channel - 13) * 1_562_500
+        args.frequency = 473_142_857 + (args.channel - 13) * 6_000_000
         print(f"Channel {args.channel} = {args.frequency}Hz ({args.frequency/1e6:.3f} MHz)")
 
     # Find device

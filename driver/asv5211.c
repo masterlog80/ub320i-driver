@@ -564,9 +564,9 @@ static struct dvb_frontend_ops asv5211_ops = {
 
 	.info = {
 		.name			= "AsicEn ASV5211 ISDB-T",
-		.frequency_min_hz	= 175000000,
-		.frequency_max_hz	= 770000000,
-		.frequency_step_hz	= 156250,
+		.frequency_min_hz	= 473142857,
+		.frequency_max_hz	= 767142857,
+		.frequency_step_hz	= 6000000,
 		.frequency_tolerance_hz	= 0,
 		.symbol_rate_min	= 0,
 		.symbol_rate_max	= 0,
