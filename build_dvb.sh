@@ -1,113 +1,73 @@
-#!/bin/bash
-# Build the asv5211 DVB-USB out-of-tree module.
-#
-# This script creates a self-contained build environment under a staging
-# directory instead of modifying the installed kernel tree.
+#!/usr/bin/env bash
+# Build the ASV5211 driver as a normal out-of-tree kernel module.
 #
 # Usage:
-#   ./build_dvb.sh [options]
+#   ./build_dvb.sh [--kdir DIR] [--kernel-src DIR] [--install]
 #
-# Options:
-#   --kernel-src DIR   Kernel source tree (default: ~/dvb-driver-build)
-#   --staging DIR      Staging build directory (default: ~/dvb-build-staging)
-#   --install          Copy the resulting module into the running kernel's
-#                      module directory (requires sudo)
-#
+# KDIR is the configured kernel build tree (generated headers and
+# Module.symvers). KERNEL_SRC supplies the internal DVB-USB v2 header.
+# For an in-tree build they can be the same directory.
+
 set -euo pipefail
 
-# ---------- Defaults -------------------------------------------------------
-KERNEL_SRC="${HOME}/dvb-driver-build"
-STAGING="${HOME}/dvb-build-staging"
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+KDIR="/lib/modules/$(uname -r)/build"
+KERNEL_SRC="${KERNEL_SRC:-}"
 INSTALL=0
 
-# ---------- Parse arguments ------------------------------------------------
+usage() {
+    cat <<'USAGE'
+Usage: ./build_dvb.sh [options]
+
+Options:
+  --kdir DIR       Configured kernel build directory
+  --kernel-src DIR Matching full kernel source tree
+  --install        Install module and firmware for the kernel in KDIR
+  -h, --help       Show this help
+USAGE
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --kernel-src)  KERNEL_SRC="$2"; shift 2 ;;
-        --staging)     STAGING="$2";    shift 2 ;;
-        --install)     INSTALL=1;        shift   ;;
-        *) echo "Unknown option: $1" >&2; exit 1 ;;
+        --kdir)
+            [[ $# -ge 2 ]] || { echo "Missing value for --kdir" >&2; exit 2; }
+            KDIR="$2"; shift 2 ;;
+        --kernel-src)
+            [[ $# -ge 2 ]] || { echo "Missing value for --kernel-src" >&2; exit 2; }
+            KERNEL_SRC="$2"; shift 2 ;;
+        --install) INSTALL=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
-if [[ ! -d "$KERNEL_SRC" ]]; then
-    echo "ERROR: Kernel source not found at $KERNEL_SRC" >&2
+KERNEL_SRC="${KERNEL_SRC:-$KDIR}"
+DRIVER_DIR="$ROOT_DIR/driver"
+FIRMWARE="$ROOT_DIR/firmware/ub320i.fw"
+DVB_USB_HEADER="$KERNEL_SRC/drivers/media/usb/dvb-usb-v2/dvb_usb.h"
+
+[[ -d "$KDIR" ]] || { echo "ERROR: kernel build directory not found: $KDIR" >&2; exit 1; }
+[[ -f "$DVB_USB_HEADER" ]] || {
+    echo "ERROR: internal DVB-USB header not found: $DVB_USB_HEADER" >&2
+    echo "Pass --kernel-src pointing to the matching kernel source tree." >&2
     exit 1
-fi
+}
+[[ -f "$FIRMWARE" ]] || { echo "ERROR: firmware not found: $FIRMWARE" >&2; exit 1; }
 
-# ---------- Step 1: Create a clean staging tree ----------------------------
-echo "=== Preparing staging directory: $STAGING ==="
-rm -rf "$STAGING"
-mkdir -p "$STAGING"
+KERNEL_RELEASE="$(make -s -C "$KDIR" kernelrelease)"
+[[ -n "$KERNEL_RELEASE" ]] || { echo "ERROR: could not determine kernel release from $KDIR" >&2; exit 1; }
 
-# Mirror only the media subsystem from the kernel source
-for subdir in \
-    drivers/media/dvb-core \
-    drivers/media/dvb-frontends \
-    drivers/media/usb/dvb-usb-v2 \
-    drivers/media/usb/dvb-usb \
-    drivers/media/mc \
-    drivers/media/i2c \
-    drivers/media/common \
-    drivers/media/rc \
-    drivers/media/tuners \
-    include/media \
-    include/uapi/linux/dvb \
-    include/linux \
-    include/uapi/linux \
-    include/uapi
-do
-    src="$KERNEL_SRC/$subdir"
-    if [[ -d "$src" ]]; then
-        mkdir -p "$STAGING/$subdir"
-        cp -r "$src"/. "$STAGING/$subdir/"
-    fi
-done
+echo "=== Building asv5211 for kernel $KERNEL_RELEASE ==="
+make -C "$KDIR" M="$DRIVER_DIR" \
+    EXTRA_CFLAGS="-I$KERNEL_SRC/drivers/media/usb/dvb-usb-v2" modules
 
-# ---------- Step 2: Enable DVB in .config ----------------------------------
-echo "=== Enabling DVB config ==="
-cp "$KERNEL_SRC/.config" "$STAGING/.config"
-cat >> "$STAGING/.config" << 'EOF'
-CONFIG_DVB_CORE=m
-CONFIG_DVB_USB=m
-CONFIG_DVB_USB_V2=m
-CONFIG_DVB_USB_AF9035=m
-CONFIG_MEDIA_CONTROLLER=y
-CONFIG_DVB_NET=y
-CONFIG_RC_CORE=y
-CONFIG_RC_MAP=y
-CONFIG_DVB_AF9033=m
-CONFIG_DVB_AF9035=m
-EOF
+echo "=== Build complete ==="
+echo "Module: $DRIVER_DIR/asv5211.ko"
 
-# ---------- Step 3: Resolve config in staging only -------------------------
-echo "=== Running make oldconfig (staging only) ==="
-cd "$STAGING"
-make -s oldconfig defconfig < /dev/null 2>&1 | tail -5 || true
-
-# ---------- Step 4: Build only the modules we need -------------------------
-echo "=== Building DVB modules ==="
-make -j"$(nproc)" \
-    KBUILD_MODULES=1 \
-    modules \
-    drivers/media/dvb-core/built-in.a \
-    drivers/media/dvb-core/dvb-core.ko \
-    drivers/media/usb/dvb-usb/dvb-usb.ko \
-    drivers/media/usb/dvb-usb-v2/dvb-usb-v2.ko \
-    2>&1 | tail -50
-
-echo "=== Build Complete ==="
-
-# ---------- Step 5 (optional): Install -------------------------------------
-if [[ $INSTALL -eq 1 ]]; then
-    CURRENT_KERNEL="$(uname -r)"
-    MOD_DIR="/lib/modules/${CURRENT_KERNEL}/kernel/drivers/media"
-    echo "=== Installing modules for kernel $CURRENT_KERNEL ==="
-    sudo make INSTALL_MOD_PATH="/" INSTALL_MOD_DIR="$(dirname "$MOD_DIR")" modules_install
-    sudo depmod -a
-    echo "=== Installation Complete ==="
-else
-    echo ""
-    echo "Modules built in: $STAGING"
-    echo "To install, run:  $0 --install"
+if [[ "$INSTALL" -eq 1 ]]; then
+    echo "=== Installing module and firmware for $KERNEL_RELEASE ==="
+    sudo make -C "$KDIR" M="$DRIVER_DIR" INSTALL_MOD_DIR=updates modules_install
+    sudo install -D -m 0644 "$FIRMWARE" /lib/firmware/dvb-usb-asv5211.fw
+    sudo depmod -a "$KERNEL_RELEASE"
+    echo "=== Installation complete ==="
 fi

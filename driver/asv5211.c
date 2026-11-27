@@ -29,6 +29,8 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/mutex.h>
+#include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/usb.h>
 
@@ -46,8 +48,8 @@ static int freq_offset;
 module_param(freq_offset, int, 0644);
 MODULE_PARM_DESC(freq_offset, "Override the frequency offset in kHz");
 
-static int adapt_nr = -1;
-module_param_named(adapter_nr, adapt_nr, int, 0444);
+static short adapt_nr = -1;
+module_param_named(adapter_nr, adapt_nr, short, 0444);
 MODULE_PARM_DESC(adapter_nr, "Override the adapter number (default = -1)");
 
 /* ------------------------------------------------------------------ */
@@ -220,7 +222,7 @@ static int asv5211_read_reg16(struct dvb_usb_device *d, u16 reg, u16 *val)
 /* ------------------------------------------------------------------ */
 
 static int asv5211_download_firmware(struct dvb_usb_device *d,
-				     const struct firmware *firmware)
+                                     const struct firmware *firmware)
 {
 	int i, rc;
 
@@ -228,7 +230,6 @@ static int asv5211_download_firmware(struct dvb_usb_device *d,
 		dev_err(&d->intf->dev, "firmware data is NULL\n");
 		return -ENOENT;
 	}
-
 	if (firmware->size != ASV5211_FW_SIZE) {
 		dev_err(&d->intf->dev,
 			"firmware size mismatch: expected %u, got %zu\n",
@@ -242,33 +243,38 @@ static int asv5211_download_firmware(struct dvb_usb_device *d,
 	for (i = 0; i < ASV5211_FW_SEGMENTS; i++) {
 		const struct asv5211_fw_seg *seg = &asv5211_fw_segments[i];
 
-		dev_info(&d->intf->dev,
-			 "  segment %d/%d: offset=0x%04x len=%u req=0x%02x\n",
-			 i + 1, ASV5211_FW_SEGMENTS,
-			 seg->offset, seg->length, seg->request);
-
-		rc = usb_control_msg(d->udev,
-				     usb_sndctrlpipe(d->udev, 0),
-				     seg->request,
-				     USB_DIR_OUT | USB_TYPE_VENDOR,
+		rc = usb_control_msg(d->udev, usb_sndctrlpipe(d->udev, 0),
+				     seg->request, USB_DIR_OUT | USB_TYPE_VENDOR,
 				     seg->offset, ASV5211_FW_W_INDEX,
 				     (u8 *)firmware->data + seg->offset,
 				     seg->length, 5000);
-
 		if (rc < 0) {
+			/*
+			 * The final write may reset the bootloader device before
+			 * the control-transfer status stage completes. Only
+			 * accept disconnect-style errors on the final segment.
+			 */
+			if (i == ASV5211_FW_SEGMENTS - 1 &&
+			    (rc == -ENODEV || rc == -ESHUTDOWN ||
+			     rc == -ECONNRESET)) {
+				dev_info(&d->intf->dev,
+					 "device disconnected during final firmware segment; awaiting re-enumeration\n");
+				return RECONNECTS_USB;
+			}
 			dev_err(&d->intf->dev,
-				"firmware segment %d failed: %d\n", i, rc);
+				"firmware segment %d failed: %d\n", i + 1, rc);
 			return rc;
 		}
 		if (rc != seg->length) {
-			dev_warn(&d->intf->dev,
-				 "firmware segment %d: short write (%d/%u)\n",
-				 i, rc, seg->length);
-			/* May be normal on last segment (device resets) */
+			dev_err(&d->intf->dev,
+				"firmware segment %d short write: %d/%u\n",
+				i + 1, rc, seg->length);
+			return -EIO;
 		}
 	}
 
-	dev_info(&d->intf->dev, "firmware download complete\n");
+	dev_info(&d->intf->dev,
+		 "firmware download complete; awaiting USB re-enumeration\n");
 	return RECONNECTS_USB;
 }
 
@@ -354,11 +360,10 @@ out:
 
 static int asv5211_power_ctrl(struct dvb_usb_device *d, int on)
 {
-	if (on) {
-		d->powered = 1;
+	/* DVB-USB v2 updates d->powered before invoking this callback. */
+	if (on)
 		return asv5211_init_device(d);
-	}
-	d->powered = 0;
+
 	return 0;
 }
 
@@ -432,63 +437,68 @@ static int asv5211_fe_sleep(struct dvb_frontend *fe)
 {
 	struct dvb_usb_device *d = fe_to_d(fe);
 	struct asv5211_state *st = d_to_priv(d);
+	int rc;
 
 	mutex_lock(&st->lock);
-	asv5211_write_reg32(d, ASV5211_REG_DEMOD_CONTROL,
-			    ASV5211_DEMOD_SOFT_RESET);
+	rc = asv5211_write_reg32(d, ASV5211_REG_DEMOD_CONTROL,
+				 ASV5211_DEMOD_SOFT_RESET);
 	mutex_unlock(&st->lock);
-
-	return 0;
+	return rc;
 }
 
 static int asv5211_fe_set_frontend(struct dvb_frontend *fe)
 {
 	struct dvb_usb_device *d = fe_to_d(fe);
 	struct asv5211_state *st = d_to_priv(d);
+	s64 adjusted_frequency;
+	u32 requested_frequency;
 	u32 frequency_hz;
 	int rc = 0;
 
-	/* Kernel 5.4: frequency in dtv_property_cache, in Hz for terrestrial */
-	frequency_hz = fe->dtv_property_cache.frequency;
-	if (freq_offset)
-		frequency_hz += freq_offset * 1000;
+	requested_frequency = fe->dtv_property_cache.frequency;
+	if (requested_frequency < 473142857U ||
+	    requested_frequency > 707142857U)
+		return -EINVAL;
+
+	adjusted_frequency = (s64)requested_frequency + (s64)freq_offset * 1000;
+	if (adjusted_frequency <= 0 || adjusted_frequency > 0xffffffffLL)
+		return -EINVAL;
+	frequency_hz = (u32)adjusted_frequency;
 
 	dev_dbg(&d->intf->dev,
 		"set_frontend: freq=%u Hz delivery=%u\n",
 		frequency_hz, fe->dtv_property_cache.delivery_system);
 
 	mutex_lock(&st->lock);
-
-	/* Reset to ISDB-T mode */
 	rc = asv5211_write_reg32(d, ASV5211_REG_DEMOD_CONTROL,
 				 ASV5211_DEMOD_ISDBT_MODE);
-	if (rc) goto out;
+	if (rc)
+		goto out;
 	msleep(50);
 
-	/* Bandwidth: Japan ISDB-T mobile is 6 MHz */
 	rc = asv5211_write_reg32(d, ASV5211_REG_TUNER_BW,
 				 ASV5211_BW_6MHZ);
-	if (rc) goto out;
+	if (rc)
+		goto out;
 	msleep(50);
 
-	/* Set frequency */
 	rc = asv5211_write_reg32(d, ASV5211_REG_TUNER_FREQ, frequency_hz);
-	if (rc) goto out;
+	if (rc)
+		goto out;
 	msleep(500);
 
-	/* Start demodulation */
 	rc = asv5211_write_reg32(d, ASV5211_REG_DEMOD_CONTROL,
 				 ASV5211_DEMOD_START);
-	if (rc) goto out;
+	if (rc)
+		goto out;
 	msleep(1000);
-
 out:
 	mutex_unlock(&st->lock);
 	return rc;
 }
 
 static int asv5211_fe_read_status(struct dvb_frontend *fe,
-				  enum fe_status *status)
+                                  enum fe_status *status)
 {
 	struct dvb_usb_device *d = fe_to_d(fe);
 	struct asv5211_state *st = d_to_priv(d);
@@ -496,24 +506,17 @@ static int asv5211_fe_read_status(struct dvb_frontend *fe,
 	int rc;
 
 	*status = 0;
-
 	mutex_lock(&st->lock);
 	rc = asv5211_read_reg32(d, ASV5211_REG_DEMOD_STATUS, &raw_status);
+	mutex_unlock(&st->lock);
+
 	if (rc != 4) {
 		dev_dbg(&d->intf->dev, "status read failed: %d\n", rc);
-		goto out;
+		return rc < 0 ? rc : -EIO;
 	}
-
-	dev_dbg(&d->intf->dev,
-		"read_status: raw=0x%08x\n", raw_status);
-
-	if (raw_status & ASV5211_STATUS_LOCKED) {
+	dev_dbg(&d->intf->dev, "read_status: raw=0x%08x\n", raw_status);
+	if (raw_status & ASV5211_STATUS_LOCKED)
 		*status = FE_HAS_SIGNAL | FE_HAS_CARRIER | FE_HAS_LOCK;
-	}
-	/* else *status stays 0 — no signal */
-
-out:
-	mutex_unlock(&st->lock);
 	return 0;
 }
 
@@ -521,50 +524,56 @@ static int asv5211_fe_read_ber(struct dvb_frontend *fe, u32 *ber)
 {
 	struct dvb_usb_device *d = fe_to_d(fe);
 	struct asv5211_state *st = d_to_priv(d);
-	u32 val = 0;
+	u16 val = 0;
+	int rc;
 
 	mutex_lock(&st->lock);
-	rc = asv5211_read_reg32(d, ASV5211_REG_DEMOD_BER, &val);
+	rc = asv5211_read_reg16(d, ASV5211_REG_DEMOD_BER, &val);
 	mutex_unlock(&st->lock);
-
-	if (rc != 4)
-		return rc;
-
+	if (rc != 2)
+		return rc < 0 ? rc : -EIO;
 	*ber = val;
 	return 0;
+}
 
 static int asv5211_fe_read_signal_strength(struct dvb_frontend *fe,
-					   u16 *strength)
+                                           u16 *strength)
 {
 	struct dvb_usb_device *d = fe_to_d(fe);
 	struct asv5211_state *st = d_to_priv(d);
-	u32 val = 0;
+	u16 val = 0;
+	int rc;
 
 	mutex_lock(&st->lock);
-	rc = asv5211_read_reg32(d, ASV5211_REG_DEMOD_SIGNAL, &val);
+	rc = asv5211_read_reg16(d, ASV5211_REG_DEMOD_SIGNAL, &val);
 	mutex_unlock(&st->lock);
-
-	if (rc != 4)
-		return rc;
-
-	*strength = (val > 65535) ? 65535 : (u16)val;
+	if (rc != 2)
+		return rc < 0 ? rc : -EIO;
+	*strength = val;
 	return 0;
+}
 
 static int asv5211_fe_read_snr(struct dvb_frontend *fe, u16 *snr)
 {
 	struct dvb_usb_device *d = fe_to_d(fe);
 	struct asv5211_state *st = d_to_priv(d);
-	u32 val = 0;
+	u16 val = 0;
+	int rc;
 
 	mutex_lock(&st->lock);
-	rc = asv5211_read_reg32(d, ASV5211_REG_DEMOD_SNR, &val);
+	rc = asv5211_read_reg16(d, ASV5211_REG_DEMOD_SNR, &val);
 	mutex_unlock(&st->lock);
-
-	if (rc != 4)
-		return rc;
-
-	*snr = (val > 65535) ? 65535 : (u16)val;
+	if (rc != 2)
+		return rc < 0 ? rc : -EIO;
+	*snr = val;
 	return 0;
+}
+
+/* Free the frontend allocated by asv5211_frontend_attach(). */
+static void asv5211_fe_release(struct dvb_frontend *fe)
+{
+	kfree(fe);
+}
 
 /* ------------------------------------------------------------------ */
 /* Frontend ops table                                                  */
@@ -576,8 +585,8 @@ static struct dvb_frontend_ops asv5211_ops = {
 	.info = {
 		.name			= "AsicEn ASV5211 ISDB-T",
 		.frequency_min_hz	= 473142857,
-		.frequency_max_hz	= 767142857,
-		.frequency_step_hz	= 6000000,
+		.frequency_max_hz	= 707142857,
+		.frequency_stepsize_hz	= 6000000,
 		.frequency_tolerance_hz	= 0,
 		.symbol_rate_min	= 0,
 		.symbol_rate_max	= 0,
@@ -592,6 +601,7 @@ static struct dvb_frontend_ops asv5211_ops = {
 	.read_ber	= asv5211_fe_read_ber,
 	.read_signal_strength = asv5211_fe_read_signal_strength,
 	.read_snr	= asv5211_fe_read_snr,
+	.release		= asv5211_fe_release,
 };
 
 /* ------------------------------------------------------------------ */
@@ -671,6 +681,7 @@ static const struct dvb_usb_device_properties asv5211_properties = {
 	.owner			= THIS_MODULE,
 
 	.size_of_priv		= sizeof(struct asv5211_state),
+	.adapter_nr		= &adapt_nr,
 
 	.probe			= asv5211_probe,
 	.disconnect		= asv5211_disconnect,
