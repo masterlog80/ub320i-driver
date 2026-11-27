@@ -226,6 +226,20 @@ def get_channel_number(frequency_hz):
     return ch_num
 
 
+def release_device(dev, iface, kernel_driver_was_active):
+    """Release USB interface and restore kernel driver."""
+    try:
+        usb.util.release_interface(dev, iface)
+    except usb.core.USBError as e:
+        print(f"  Warning: could not release interface: {e}", file=sys.stderr)
+    if kernel_driver_was_active:
+        try:
+            dev.attach_kernel_driver(0)
+            print("  Kernel driver re-attached", file=sys.stderr)
+        except usb.core.USBError as e:
+            print(f"  Warning: could not re-attach kernel driver: {e}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="UB320-i Linux Userspace Driver for ISDB-T reception",
@@ -272,113 +286,122 @@ def main():
     print(f"Found device on bus {dev.bus} address {dev.address}", file=sys.stderr)
 
     # Claim interface
+    iface = None
+    kernel_driver_was_active = False
     try:
         cfg = dev.get_active_configuration()
         iface = cfg[(0, 0)]
-        if dev.is_kernel_driver_active(0):
+        kernel_driver_was_active = dev.is_kernel_driver_active(0)
+        if kernel_driver_was_active:
             print("  Detaching kernel driver...", file=sys.stderr)
             dev.detach_kernel_driver(0)
         usb.util.claim_interface(dev, iface)
     except Exception as e:
         print(f"  Warning: could not claim interface: {e}", file=sys.stderr)
         print("  Try running with sudo", file=sys.stderr)
-
-    # Initialize
-    initialize_device(dev)
-
-    if args.init_only:
-        print("Initialization complete", file=sys.stderr)
-        return 0
-
-    # Status mode
-    if args.status:
-        print("Device Status:", file=sys.stderr)
-        status = read_reg(dev, REG_DEMOD_STATUS)
-        snr = read_reg(dev, REG_DEMOD_SNR, 2)
-        signal = read_reg(dev, REG_DEMOD_SIGNAL, 2)
-        ber = read_reg(dev, REG_DEMOD_BER, 2)
-        print(f"  Status: 0x{status:08X}" if status else "  Status: unavailable", file=sys.stderr)
-        print(f"  SNR: {snr}" if snr is not None else "  SNR: unavailable", file=sys.stderr)
-        print(f"  Signal: {signal}" if signal is not None else "  Signal: unavailable", file=sys.stderr)
-        print(f"  BER: {ber}" if ber is not None else "  BER: unavailable", file=sys.stderr)
-        return 0
-
-    # Scan mode
-    if args.scan:
-        channels = scan_channels(
-            dev,
-            int(args.scan_min * 1e6),
-            int(args.scan_max * 1e6),
-            1_562_500
-        )
-
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write("Frequency(MHz)\tChannel\tSNR\n")
-                for freq, snr in channels:
-                    ch = get_channel_number(freq)
-                    f.write(f"{freq/1e6:.3f}\t{ch}\t{snr}\n")
-            print(f"\nScan results saved to {args.output}", file=sys.stderr)
-        else:
-            print(f"\nFound {len(channels)} channels:", file=sys.stderr)
-            for freq, snr in channels:
-                ch = get_channel_number(freq)
-                print(f"  Channel {ch}: {freq/1e6:.3f} MHz (SNR={snr})", file=sys.stderr)
-
-        if not channels:
-            print("No channels found. Try adjusting antenna or scan range.", file=sys.stderr)
-        return 0 if channels else 1
-
-    # Capture mode
-    if not args.frequency:
-        print("Error: --frequency or --channel required for capture mode", file=sys.stderr)
-        parser.print_help()
         return 1
 
-    # Tune
-    if not tune_frequency(dev, args.frequency):
-        print("Warning: tuning failed, attempting capture anyway...", file=sys.stderr)
-
-    # Open output
-    outfile = None
-    if args.output:
-        outfile = open(args.output, 'wb')
-        print(f"Writing to {args.output}", file=sys.stderr)
-    else:
-        print("Writing to stdout (pipe to file or player)", file=sys.stderr)
-
-    # Capture loop
-    packets = 0
-    bytes_written = 0
-    start_time = time.time()
     try:
-        while True:
-            if args.duration and (time.time() - start_time) >= args.duration:
-                break
+        # Initialize
+        initialize_device(dev)
 
-            data = read_ts_data(dev, timeout_ms=500)
-            if data:
-                if outfile:
-                    outfile.write(data)
-                else:
-                    sys.stdout.buffer.write(data)
-                    sys.stdout.buffer.flush()
-                packets += 1
-                bytes_written += len(data)
+        if args.init_only:
+            print("Initialization complete", file=sys.stderr)
+            return 0
 
-                # Progress report every 1000 packets
-                if packets % 1000 == 0:
-                    elapsed = time.time() - start_time
-                    rate = bytes_written / elapsed / 1024
-                    print(f"\r  {packets} packets, {bytes_written/1024/1024:.1f} MB ({rate:.1f} KB/s)", file=sys.stderr, end='', flush=True)
+        # Status mode
+        if args.status:
+            print("Device Status:", file=sys.stderr)
+            status = read_reg(dev, REG_DEMOD_STATUS)
+            snr = read_reg(dev, REG_DEMOD_SNR, 2)
+            signal = read_reg(dev, REG_DEMOD_SIGNAL, 2)
+            ber = read_reg(dev, REG_DEMOD_BER, 2)
+            print(f"  Status: 0x{status:08X}" if status else "  Status: unavailable", file=sys.stderr)
+            print(f"  SNR: {snr}" if snr is not None else "  SNR: unavailable", file=sys.stderr)
+            print(f"  Signal: {signal}" if signal is not None else "  Signal: unavailable", file=sys.stderr)
+            print(f"  BER: {ber}" if ber is not None else "  BER: unavailable", file=sys.stderr)
+            return 0
 
-    except KeyboardInterrupt:
-        print(f"\n\nCapture stopped after {packets} packets ({bytes_written/1024/1024:.1f} MB)", file=sys.stderr)
+        # Scan mode
+        if args.scan:
+            channels = scan_channels(
+                dev,
+                int(args.scan_min * 1e6),
+                int(args.scan_max * 1e6),
+                1_562_500
+            )
+
+            if args.output:
+                with open(args.output, 'w') as f:
+                    f.write("Frequency(MHz)\tChannel\tSNR\n")
+                    for freq, snr in channels:
+                        ch = get_channel_number(freq)
+                        f.write(f"{freq/1e6:.3f}\t{ch}\t{snr}\n")
+                print(f"\nScan results saved to {args.output}", file=sys.stderr)
+            else:
+                print(f"\nFound {len(channels)} channels:", file=sys.stderr)
+                for freq, snr in channels:
+                    ch = get_channel_number(freq)
+                    print(f"  Channel {ch}: {freq/1e6:.3f} MHz (SNR={snr})", file=sys.stderr)
+
+            if not channels:
+                print("No channels found. Try adjusting antenna or scan range.", file=sys.stderr)
+            return 0 if channels else 1
+
+        # Capture mode
+        if not args.frequency:
+            print("Error: --frequency or --channel required for capture mode", file=sys.stderr)
+            parser.print_help()
+            return 1
+
+        # Tune
+        if not tune_frequency(dev, args.frequency):
+            print("Warning: tuning failed, attempting capture anyway...", file=sys.stderr)
+
+        # Open output
+        outfile = None
+        if args.output:
+            outfile = open(args.output, 'wb')
+            print(f"Writing to {args.output}", file=sys.stderr)
+        else:
+            print("Writing to stdout (pipe to file or player)", file=sys.stderr)
+
+        # Capture loop
+        packets = 0
+        bytes_written = 0
+        start_time = time.time()
+        try:
+            while True:
+                if args.duration and (time.time() - start_time) >= args.duration:
+                    break
+
+                data = read_ts_data(dev, timeout_ms=500)
+                if data:
+                    if outfile:
+                        outfile.write(data)
+                    else:
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                    packets += 1
+                    bytes_written += len(data)
+
+                    # Progress report every 1000 packets
+                    if packets % 1000 == 0:
+                        elapsed = time.time() - start_time
+                        rate = bytes_written / elapsed / 1024
+                        print(f"\r  {packets} packets, {bytes_written/1024/1024:.1f} MB ({rate:.1f} KB/s)", file=sys.stderr, end='', flush=True)
+
+        except KeyboardInterrupt:
+            print(f"\n\nCapture stopped after {packets} packets ({bytes_written/1024/1024:.1f} MB)", file=sys.stderr)
+
+        finally:
+            stop_capture(dev)
+            if outfile:
+                outfile.close()
 
     finally:
-        stop_capture(dev)
-        if outfile:
-            outfile.close()
+        # Always release the USB interface and restore the kernel driver
+        release_device(dev, iface, kernel_driver_was_active)
 
     return 0
 
