@@ -2,6 +2,8 @@
 
 Linux support for the **KWorld UB320-i** USB TV tuner, an **AsicEn ASV5211**-based ISDB-T ONE SEG receiver designed for the Japanese digital television market.
 
+> **Experimental:** the driver and USB protocol have not yet been verified against physical hardware. See [VERIFICATION.md](VERIFICATION.md) before attempting installation.
+
 ## Hardware
 
 | Property | Value |
@@ -11,7 +13,7 @@ Linux support for the **KWorld UB320-i** USB TV tuner, an **AsicEn ASV5211**-bas
 | USB IDs (bootloader) | `1738:5211` |
 | USB IDs (operational) | `1b80:b320` |
 | Standard | Japan ISDB-T (ONE SEG / mobile) |
-| Frequency range | 175-770 MHz |
+| Japanese UHF channel range | 473.142857-707.142857 MHz (channels 13-52) |
 | Bandwidth | 6 MHz |
 
 ## Repository Layout
@@ -49,26 +51,43 @@ sudo udevadm trigger
 ### 3. Build the kernel module
 
 The driver uses `dvb_usb.h`, an **internal kernel header** located at
-`drivers/media/usb/dvb-usb-v2/dvb_usb.h` inside your kernel source tree.
-You must point `KERNEL_SRC` to it:
+`drivers/media/usb/dvb-usb-v2/dvb_usb.h`. Build against a configured kernel
+build tree matching the target kernel. If that internal header is not present
+in the build directory, supply the matching full kernel source tree.
 
 ```bash
 cd driver
 
-# Default — kernel headers under /lib/modules/$(uname -r)/build
+# Build for the currently running kernel
 make KDIR=/lib/modules/$(uname -r)/build
 
-# If kernel source is elsewhere (e.g. BPI-M4 Berry):
-make KDIR=/lib/modules/$(uname -r)/build \
-     KERNEL_SRC=/path/to/kernel/source
+# If source and configured build directories are separate
+make KDIR=/path/to/configured-kernel-build \
+     KERNEL_SRC=/path/to/matching/kernel-source
 ```
+
+You can alternatively build from the repository root:
+
+```bash
+./build_dvb.sh --kdir /lib/modules/$(uname -r)/build \
+    --kernel-src /path/to/matching/kernel-source
+```
+
+The target kernel must already provide the DVB-USB v2 framework and its
+exported symbols. This builds the driver as an external module; it does not
+build or replace the kernel media subsystem.
 
 ### 4. Install and load
 
 ```bash
-sudo make install KDIR=/lib/modules/$(uname -r)/build
+cd driver
+sudo make install KDIR=/lib/modules/$(uname -r)/build \
+     KERNEL_SRC=/path/to/matching/kernel-source
 sudo modprobe asv5211
 ```
+
+Alternatively, add `--install` to `build_dvb.sh` to install the module and
+firmware after building.
 
 ### 5. Plug in the device and verify
 
@@ -85,13 +104,13 @@ ls /dev/dvb/adapter0/
 ### 6. Use with standard DVB applications
 
 ```bash
-# Scan channels (Japan ISDB-T)
+# Scan channels (Japan ISDB-T; use a channel list matching your region)
 scan -a 0 -t ISDBT /usr/share/dvb/isdbt/channels-Japan > ~/.tzap/channels.conf
 
 # Watch a channel
 tvtime -a 0
-vlc dvb://frequency=547500000:delivery-system=ISDBT:bandwidth=6
-mpv dvb://frequency=547500000:delivery-system=ISDBT:bandwidth=6
+vlc dvb://frequency=473142857:delivery-system=ISDBT:bandwidth=6
+mpv dvb://frequency=473142857:delivery-system=ISDBT:bandwidth=6
 ```
 
 ### 7. Add your user to the `video` group
@@ -109,13 +128,13 @@ If you cannot compile the kernel module, the Python userspace driver works witho
 ```bash
 sudo pip3 install pyusb
 sudo python3 load_firmware.py firmware/ub320i.fw   # Load firmware if device is cold
-sudo python3 ub320i_driver.py                      # Start receiving
+sudo python3 ub320i_driver.py --channel 13 --output channel-13.ts  # Receive channel 13
 ```
 
 ## Known Targets
 
-- **BPI-M4 Berry** (Banana Pi) — Armbian kernel `5.4.125-legacy-sunxi64`
-- Any ARM64/x86_64 system running kernel 5.4.x with DVB-USB v2 framework
+- **BPI-M4 Berry** (Banana Pi) — intended target: Armbian kernel `5.4.125-legacy-sunxi64`
+- Other architectures/kernels require a matching configured kernel build tree and compatibility verification
 
 ## Protocol Reference
 
@@ -148,12 +167,7 @@ dmesg | tail -20
 lsusb | grep -i 1b80
 ```
 
-If you see `1738:5211` (cold/bootloader) instead of `1b80:b320` (warm/operational):
-
-```bash
-sudo rmmod asv5211
-sudo modprobe asv5211
-```
+If you see `1738:5211` (cold/bootloader), check that `/lib/firmware/dvb-usb-asv5211.fw` exists and inspect firmware-loading messages in `dmesg`. The kernel driver is intended to bind to the cold USB ID, download firmware, and wait for re-enumeration as `1b80:b320`.
 
 ### Permission denied on `/dev/dvb/...`
 
@@ -173,7 +187,7 @@ sudo udevadm trigger --subsystem-match=dvb     # Trigger DVB devices
 
 ### Module parameter: frequency offset
 
-If channels aren't found at the expected frequency:
+If a known Japanese UHF channel does not lock, first confirm the channel number and centre frequency (channel 13 is 473.142857 MHz; channels are spaced 6 MHz apart). A small hardware-specific offset can be supplied with:
 
 ```bash
 sudo modprobe asv5211 freq_offset=50   # Shift by +50 kHz
