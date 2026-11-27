@@ -77,8 +77,7 @@ def write_reg(dev, reg, value, length=4):
     try:
         dev.ctrl_transfer(USB_DIR_OUT, 0x90, reg, 0x0000, data, timeout=2000)
     except usb.core.USBError as e:
-        if e.errno != 110:  # Ignore timeout on some writes
-            raise
+        raise
 
 
 def read_reg(dev, reg, length=4):
