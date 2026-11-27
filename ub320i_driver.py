@@ -50,7 +50,9 @@ ISDB_T_BANDWIDTH_8MHZ = 2
 
 ISDB_T_ONESEG = True   # This is a 1-seg (mobile) tuner
 ISDB_T_JAPAN_FREQ_MIN = 473_142_857   # Channel 13
-ISDB_T_JAPAN_FREQ_MAX = 767_142_857   # Channel 62
+ISDB_T_JAPAN_FREQ_MAX = 707_142_857   # Channel 52
+ISDB_T_FIRST_CHANNEL = 13
+ISDB_T_LAST_CHANNEL = 52
 ISDB_T_JAPAN_FREQ_STEP = 6_000_000  # Hz (6 MHz spacing)
 
 # Register addresses inferred from firmware analysis
@@ -71,19 +73,24 @@ TS_PACKET_SIZE = 188
 
 def write_reg(dev, reg, value, length=4):
     """Write a register value via vendor control transfer."""
-    data = struct.pack('<I', value) if length == 4 else struct.pack('<H', value)
-    if length == 2:
+    if length == 4:
+        data = struct.pack('<I', value)
+    elif length == 2:
         data = struct.pack('<H', value)
-    try:
-        dev.ctrl_transfer(USB_DIR_OUT, 0x90, reg, 0x0000, data, timeout=2000)
-    except usb.core.USBError as e:
-        raise
+    else:
+        raise ValueError("register writes support only 2-byte or 4-byte values")
+
+    written = dev.ctrl_transfer(USB_DIR_OUT, 0x90, reg, 0x0000, data, timeout=2000)
+    if written != len(data):
+        raise IOError(f"short register write at 0x{reg:04X}: {written}/{len(data)} bytes")
 
 
 def read_reg(dev, reg, length=4):
     """Read a register value via vendor control transfer."""
     try:
-        data = dev.ctrl_transfer(USB_DIR_IN, 0x91, reg, 0x0000, length, timeout=2000)
+        data = bytes(dev.ctrl_transfer(USB_DIR_IN, 0x91, reg, 0x0000, length, timeout=2000))
+        if len(data) != length:
+            raise IOError(f"short register read at 0x{reg:04X}: {len(data)}/{length} bytes")
         if length == 4:
             return struct.unpack('<I', bytes(data))[0]
         elif length == 2:
@@ -138,36 +145,46 @@ def initialize_device(dev):
     print("  Device initialized", file=sys.stderr)
 
 
+def channel_frequency(channel):
+    """Return the Japanese ISDB-T channel centre frequency in Hz."""
+    if not ISDB_T_FIRST_CHANNEL <= channel <= ISDB_T_LAST_CHANNEL:
+        raise ValueError(
+            f"channel must be between {ISDB_T_FIRST_CHANNEL} and {ISDB_T_LAST_CHANNEL}"
+        )
+    return ISDB_T_JAPAN_FREQ_MIN + (channel - ISDB_T_FIRST_CHANNEL) * ISDB_T_JAPAN_FREQ_STEP
+
+
 def tune_frequency(dev, frequency_hz):
-    """Tune to a specific frequency in Hz."""
+    """Tune to the nearest valid Japanese UHF ISDB-T channel centre."""
     if not (ISDB_T_JAPAN_FREQ_MIN <= frequency_hz <= ISDB_T_JAPAN_FREQ_MAX):
-        print(f"  Warning: frequency {frequency_hz}Hz outside Japan ISDB-T range", file=sys.stderr)
+        print(f"  Frequency {frequency_hz}Hz outside Japanese UHF channel range", file=sys.stderr)
+        return False
 
-    # Round to nearest frequency step
-    freq = round(frequency_hz / ISDB_T_JAPAN_FREQ_STEP) * ISDB_T_JAPAN_FREQ_STEP
+    # Quantize relative to channel 13, not to zero.
+    channel_index = round(
+        (frequency_hz - ISDB_T_JAPAN_FREQ_MIN) / ISDB_T_JAPAN_FREQ_STEP
+    )
+    freq = ISDB_T_JAPAN_FREQ_MIN + channel_index * ISDB_T_JAPAN_FREQ_STEP
+    if not (ISDB_T_JAPAN_FREQ_MIN <= freq <= ISDB_T_JAPAN_FREQ_MAX):
+        print(f"  Rounded frequency {freq}Hz is outside the supported channel range", file=sys.stderr)
+        return False
 
-    print(f"  Tuning to {freq}Hz ({freq/1e6:.3f} MHz)...", file=sys.stderr)
-
-    # Set frequency (firmware uses little-endian 32-bit frequency)
+    print(f"  Tuning to {freq}Hz ({freq/1e6:.6f} MHz)...", file=sys.stderr)
     write_reg(dev, REG_TUNER_FREQ, int(freq))
     time.sleep(0.5)
 
-    # Start demodulation
     write_reg(dev, REG_DEMOD_CONTROL, 0x00000003)
     time.sleep(1.0)
 
-    # Check lock status
     status = read_reg(dev, REG_DEMOD_STATUS)
     if status is not None:
-        locked = bool(status & 0x01)
-        if locked:
+        if status & 0x01:
             snr = read_reg(dev, REG_DEMOD_SNR, 2)
             signal = read_reg(dev, REG_DEMOD_SIGNAL, 2)
             print(f"  Locked! SNR={snr}, Signal={signal}", file=sys.stderr)
             return True
-        else:
-            print("  No lock detected", file=sys.stderr)
-            return False
+        print("  No lock detected", file=sys.stderr)
+        return False
     return False
 
 
@@ -189,32 +206,46 @@ def read_ts_data(dev, timeout_ms=1000):
     return None
 
 
-def scan_channels(dev, freq_min, freq_max, freq_step=1_562_500):
-    """Scan for ISDB-T channels in the given frequency range."""
-    print(f"Scanning {freq_min/1e6:.1f} - {freq_max/1e6:.1f} MHz (step {freq_step/1000} kHz)...", file=sys.stderr)
+def scan_channels(dev, first_channel=ISDB_T_FIRST_CHANNEL,
+                  last_channel=ISDB_T_LAST_CHANNEL):
+    """Scan Japanese UHF channels 13-52 using their 6 MHz channel raster."""
+    if first_channel < ISDB_T_FIRST_CHANNEL or last_channel > ISDB_T_LAST_CHANNEL:
+        raise ValueError(
+            f"scan channel range must be {ISDB_T_FIRST_CHANNEL}-{ISDB_T_LAST_CHANNEL}"
+        )
+    if first_channel > last_channel:
+        raise ValueError("scan start channel must not exceed scan end channel")
 
     channels = []
-    freq = freq_min
-    total = int((freq_max - freq_min) / freq_step) + 1
+    channel_count = last_channel - first_channel + 1
+    print(
+        f"Scanning ISDB-T channels {first_channel}-{last_channel} "
+        f"({channel_frequency(first_channel)/1e6:.6f}-"
+        f"{channel_frequency(last_channel)/1e6:.6f} MHz)...",
+        file=sys.stderr,
+    )
 
-    while freq <= freq_max:
-        progress = int((freq - freq_min) / freq_step)
-        pct = (progress / total) * 100
+    try:
+        for index, channel in enumerate(range(first_channel, last_channel + 1), 1):
+            freq = channel_frequency(channel)
+            pct = index / channel_count * 100
+            tune_frequency(dev, freq)
 
-        tune_frequency(dev, freq)
-
-        status = read_reg(dev, REG_DEMOD_STATUS)
-        if status and (status & 0x01):
-            snr = read_reg(dev, REG_DEMOD_SNR, 2)
-            channels.append((freq, snr))
-            print(f"  [{pct:.0f}%] Channel found: {freq/1e6:.3f} MHz (SNR={snr})", file=sys.stderr)
-        else:
-            print(f"  [{pct:.0f}%] {freq/1e6:.3f} MHz ...", file=sys.stderr)
-
-        freq += freq_step
-
-    # Stop capture after scan
-    stop_capture(dev)
+            status = read_reg(dev, REG_DEMOD_STATUS)
+            if status is not None and (status & 0x01):
+                snr = read_reg(dev, REG_DEMOD_SNR, 2)
+                channels.append((freq, snr))
+                print(
+                    f"  [{pct:.0f}%] Channel {channel}: {freq/1e6:.6f} MHz (SNR={snr})",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"  [{pct:.0f}%] Channel {channel}: {freq/1e6:.6f} MHz ...",
+                    file=sys.stderr,
+                )
+    finally:
+        stop_capture(dev)
 
     return channels
 
@@ -222,16 +253,16 @@ def scan_channels(dev, freq_min, freq_max, freq_step=1_562_500):
 def get_channel_number(frequency_hz):
     """Convert frequency to Japan ISDB-T channel number."""
     # Japan terrestrial TV: Ch13=473.142857 MHz, 6 MHz spacing
-    ch_num = round((frequency_hz - 473_142_857) / 6_000_000) + 13
-    return ch_num
+    return round((frequency_hz - ISDB_T_JAPAN_FREQ_MIN) / ISDB_T_JAPAN_FREQ_STEP) + ISDB_T_FIRST_CHANNEL
 
 
-def release_device(dev, iface, kernel_driver_was_active):
+def release_device(dev, iface, kernel_driver_was_active, interface_claimed=True):
     """Release USB interface and restore kernel driver."""
-    try:
-        usb.util.release_interface(dev, iface)
-    except usb.core.USBError as e:
-        print(f"  Warning: could not release interface: {e}", file=sys.stderr)
+    if interface_claimed and iface is not None:
+        try:
+            usb.util.release_interface(dev, iface)
+        except usb.core.USBError as e:
+            print(f"  Warning: could not release interface: {e}", file=sys.stderr)
     if kernel_driver_was_active:
         try:
             dev.attach_kernel_driver(0)
@@ -246,17 +277,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('--frequency', '-f', type=int,
-                        help='Frequency in Hz (e.g., 461750000)')
+                        help='Frequency in Hz (e.g., 473142857, channel 13)')
     parser.add_argument('--channel', '-c', type=int,
-                        help='Japan ISDB-T channel number (13-62)')
+                        help='Japan ISDB-T UHF channel number (13-52)')
     parser.add_argument('--output', '-o', type=str, default=None,
                         help='Output file for TS stream (default: stdout)')
     parser.add_argument('--scan', action='store_true',
                         help='Scan for channels')
-    parser.add_argument('--scan-min', type=float, default=175.0,
-                        help='Scan minimum frequency in MHz (default: 175)')
-    parser.add_argument('--scan-max', type=float, default=770.0,
-                        help='Scan maximum frequency in MHz (default: 770)')
+    parser.add_argument('--scan-min-channel', type=int, default=ISDB_T_FIRST_CHANNEL,
+                        help='First Japanese UHF channel to scan (default: 13)')
+    parser.add_argument('--scan-max-channel', type=int, default=ISDB_T_LAST_CHANNEL,
+                        help='Last Japanese UHF channel to scan (default: 52)')
     parser.add_argument('--duration', type=int, default=0,
                         help='Capture duration in seconds (0=infinite)')
     parser.add_argument('--status', action='store_true',
@@ -269,9 +300,14 @@ def main():
     args = parser.parse_args()
 
     # Convert channel number to frequency if needed
-    if args.channel and not args.frequency:
-        args.frequency = 473_142_857 + (args.channel - 13) * 6_000_000
-        print(f"Channel {args.channel} = {args.frequency}Hz ({args.frequency/1e6:.3f} MHz)", file=sys.stderr)
+    if args.channel is not None and args.frequency is not None:
+        parser.error('--channel and --frequency cannot be used together')
+    if args.channel is not None:
+        try:
+            args.frequency = channel_frequency(args.channel)
+        except ValueError as e:
+            parser.error(str(e))
+        print(f"Channel {args.channel} = {args.frequency}Hz ({args.frequency/1e6:.6f} MHz)", file=sys.stderr)
 
     # Find device
     print(f"Looking for device {VENDOR_ID:04X}:{PRODUCT_ID:04X}...", file=sys.stderr)
@@ -280,13 +316,14 @@ def main():
     if dev is None:
         print("Device not found!", file=sys.stderr)
         print("Firmware may need to be loaded first:", file=sys.stderr)
-        print("  sudo python3 load_firmware.py ub320i.fw", file=sys.stderr)
+        print("  sudo python3 load_firmware.py firmware/ub320i.fw", file=sys.stderr)
         return 1
 
     print(f"Found device on bus {dev.bus} address {dev.address}", file=sys.stderr)
 
     # Claim interface
     iface = None
+    interface_claimed = False
     kernel_driver_was_active = False
     try:
         cfg = dev.get_active_configuration()
@@ -296,9 +333,11 @@ def main():
             print("  Detaching kernel driver...", file=sys.stderr)
             dev.detach_kernel_driver(0)
         usb.util.claim_interface(dev, iface)
+        interface_claimed = True
     except Exception as e:
-        print(f"  Warning: could not claim interface: {e}", file=sys.stderr)
+        print(f"  Error: could not claim interface: {e}", file=sys.stderr)
         print("  Try running with sudo", file=sys.stderr)
+        release_device(dev, iface, kernel_driver_was_active, interface_claimed)
         return 1
 
     try:
@@ -316,7 +355,7 @@ def main():
             snr = read_reg(dev, REG_DEMOD_SNR, 2)
             signal = read_reg(dev, REG_DEMOD_SIGNAL, 2)
             ber = read_reg(dev, REG_DEMOD_BER, 2)
-            print(f"  Status: 0x{status:08X}" if status else "  Status: unavailable", file=sys.stderr)
+            print(f"  Status: 0x{status:08X}" if status is not None else "  Status: unavailable", file=sys.stderr)
             print(f"  SNR: {snr}" if snr is not None else "  SNR: unavailable", file=sys.stderr)
             print(f"  Signal: {signal}" if signal is not None else "  Signal: unavailable", file=sys.stderr)
             print(f"  BER: {ber}" if ber is not None else "  BER: unavailable", file=sys.stderr)
@@ -324,12 +363,16 @@ def main():
 
         # Scan mode
         if args.scan:
-            channels = scan_channels(
+            if args.frequency is not None or args.channel is not None:
+                parser.error('--scan cannot be combined with --frequency or --channel')
+            try:
+                channels = scan_channels(
                 dev,
-                int(args.scan_min * 1e6),
-                int(args.scan_max * 1e6),
-                1_562_500
-            )
+                args.scan_min_channel,
+                    args.scan_max_channel
+                )
+            except ValueError as e:
+                parser.error(str(e))
 
             if args.output:
                 with open(args.output, 'w') as f:
@@ -401,7 +444,7 @@ def main():
 
     finally:
         # Always release the USB interface and restore the kernel driver
-        release_device(dev, iface, kernel_driver_was_active)
+        release_device(dev, iface, kernel_driver_was_active, interface_claimed)
 
     return 0
 
