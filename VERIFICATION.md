@@ -1,78 +1,97 @@
 # Verification Status
 
-> **Last updated:** 2026-11-27
+> Last updated: 2026-11-27
 
-## Short answer
+## Current status
 
-**Nothing in this repository has been verified against actual hardware.** The driver compiles and the Python scripts run, but the USB protocol they speak is speculative.
+This repository remains an experimental reverse-engineering project. The changes in this branch correct issues found during static review, but **the driver has not yet been built against the target kernel or tested with a physical UB320-i**.
 
-## What was done
+Do not interpret source-level corrections as proof that the USB protocol is correct.
 
-| Component | Method | Verified? |
+## Source-level corrections in this branch
+
+- Use the Linux 5.4 DVB-USB v2 frontend attach and registration lifecycle.
+- Add a frontend release callback for the allocated frontend object.
+- Correct DVB frontend information fields and the Japanese UHF channel range.
+- Return errors for short register reads/writes and failed statistics reads.
+- Avoid modifying the DVB-USB framework's power counter from the driver's power callback.
+- Treat incomplete firmware segments as failures; final-segment disconnect-style errors request USB re-enumeration.
+- Anchor Python tuning quantization to channel 13 (473.142857 MHz), not to zero.
+- Scan Japanese UHF channels 13-52 using their 6 MHz channel spacing.
+- Use the standard external-module build/install flow instead of copying selected kernel directories into a partial staging tree.
+
+The kernel statistics callbacks now use 16-bit reads to match the current Python implementation. **This remains an inferred register-width choice and must be confirmed using a Windows USB capture or hardware test.**
+
+## Not yet verified
+
+| Component | Current evidence | Hardware verified? |
 |---|---|---|
-| Firmware transfer (`load_firmware.py`) | Analyzed `ub320i.fw` structure (16 KB, segmented at offsets matching `AS11Loader.sys` patterns) | ❌ No live capture |
-| Register map (`0x0010`–`0x0044`) | Inferred from firmware byte sequences and similar ASV5211 driver patterns | ❌ No hardware response |
-| USB control requests (`0x90` OUT, `0x91` IN) | Guessed from common vendor-request conventions for DVB-USB v2 devices | ❌ Not confirmed |
-| Firmware download requests (`0xAB`/`0xAC`) | Observed in firmware loader binary; segment boundaries match 16 KB split | ⚠️ Partially — from binary analysis only |
-| ISDB-T frequency mapping | Based on Japanese ARIB STD-B31 standard (6 MHz spacing, Ch13 = 473.142857 MHz) | ✅ Standard is correct |
-| Kernel module API usage | Pattern-matched against Linux `dvb-usb-v2` framework and drivers like `dvb-usb-af9035` | ⚠️ API usage is structurally sound but hardware-specific callbacks are untested |
+| Firmware segment addresses and lengths | Reverse-engineered from local firmware/loader analysis | No |
+| Firmware request IDs (0xAB/0xAC) | Binary analysis only | No |
+| Register read/write requests (0x91/0x90) | Inferred from the current prototype | No |
+| Register offsets and data widths | Inferred; not checked against live device | No |
+| Initialization sequence | Speculative sequence in source | No |
+| Tuner lock/status bit | Assumed bit 0; not confirmed | No |
+| Transport stream endpoint and packet framing | Endpoint/188-byte packet assumption | No |
+| Japanese channel frequencies | Mapping for channels 13-52, 6 MHz spacing | Standard mapping only |
+| Kernel module compilation | Must be built against the exact target kernel tree | No |
+| Frontend registration and DVB device nodes | Requires a successful target-kernel load | No |
+| MPEG-TS reception | No capture validated for sync bytes, PIDs or PSI/SI | No |
 
-## What was NOT done
+## Build checks
 
-- **No USB packet captures** of the Windows driver (`KWORLD_UB320i.sys` / `AS11Loader.sys`) in action.
-- **No live hardware testing** — the driver was never loaded onto a running kernel with a physical UB320-i attached.
-- **No lock verification** — `FE_HAS_LOCK` has never been confirmed against a real ISDB-T transmission.
-- **No MPEG-TS validation** — captured stream data was never checked for valid sync bytes (`0x47`), PID structure, or PSI/SI tables.
-- **No firmware transfer verification** — the segmented download sequence was never confirmed to produce a functional device re-enumeration.
+Build against the configured kernel build directory matching the target kernel, with the corresponding source tree available for the internal DVB-USB v2 header:
 
-## How to verify (concrete steps)
+```bash
+./build_dvb.sh \
+    --kdir /lib/modules/KERNEL_RELEASE/build \
+    --kernel-src /path/to/matching/kernel-source
+```
 
-### 1. Capture the Windows driver protocol
+The target kernel must provide the DVB-USB v2 framework and its exported symbols. The helper builds this driver as an external module; it does not build or replace the kernel media subsystem.
 
-1. Install the device on Windows with the official `KWORLD_UB320i.sys` driver.
-2. Run [USBlyzer](https://www.batchlabs.com/), [USBPcap](https://desowin.org/usbpcap/), or [Wireshark](https://www.wireshark.org/) with USB capture enabled.
-3. Trigger a full cycle: firmware load → tune → capture → stop.
-4. Compare every control transfer (request, value, index, data) against `ub320i_driver.py` and `asv5211.c`.
+A successful build only establishes source/API compatibility with that particular kernel build. It does not establish that the USB commands or register map work.
 
-### 2. Verify firmware transfer
+## Hardware verification procedure
 
-1. Capture `AS11Loader.sys` transferring firmware to the cold device (`1738:5211`).
-2. Confirm each segment's request ID, offset, length, and data match `load_firmware.py` / `SEGMENTS`.
-3. Confirm the device re-enumerates to `1b80:b320` after the final segment.
+### 1. Capture the Windows protocol
 
-### 3. Test the kernel module on hardware
+1. Connect the UB320-i to Windows with the original KWorld driver.
+2. Capture USB traffic using USBPcap and Wireshark.
+3. Capture a full sequence: cold-device firmware upload, operational-device initialization, channel tuning, stream start and stream stop.
+4. Compare each transfer's request type, request, value, index, payload and length with the Linux implementation.
 
-1. Build against the target kernel (`5.4.125-legacy-sunxi64`).
-2. Load with `modprobe asv5211` and attach the device.
-3. Check `dmesg` for firmware load, frontend registration, and error messages.
-4. Verify `/dev/dvb/adapter0/frontend0` exists.
+### 2. Verify firmware loading
 
-### 4. Verify ISDB-T lock and stream
+1. Confirm that the cold USB identifier is `1738:5211`.
+2. Compare every firmware segment offset, request ID, payload and length against the Windows capture.
+3. Verify re-enumeration as `1b80:b320`.
+4. Confirm that incomplete writes are reported as failures.
 
-1. Point an antenna at a known ISDB-T transmitter in Japan (or a signal generator).
-2. Tune with `dvb-fe-tool -S -a 0 -f <frequency>` or `w_scan -c JP -t ISDBT`.
-3. Check lock status: `dvb-fe-tool -S -a 0` should report `FE_HAS_LOCK` and `FE_HAS_VITERBI`.
-4. Capture a stream: `dvb-streamer -o test.ts -d 10 /dev/dvb/adapter0/dvr0`
-5. Validate the TS: `tsduck --input test.ts --stats` or check sync bytes with `xxd test.ts | head`.
+### 3. Verify DVB frontend operation
 
-### 5. Cross-reference with other ASV5211 drivers
+1. Build against the exact target kernel.
+2. Load the module and connect the tuner.
+3. Check `dmesg` for firmware, frontend-registration and USB errors.
+4. Confirm that `/dev/dvb/adapter0/frontend0`, `demux0` and `dvr0` appear.
+5. Verify that frontend tuning requests use the expected Japanese channel-centre frequencies.
 
-Search for:
-- Linux mainline patches mentioning "ASV5211" or "asicen"
-- Other reverse-engineered implementations on GitHub
-- DVB forum discussions about the UB320-i
+### 4. Verify reception
 
-## What could be wrong
+1. Use a known-good Japanese ISDB-T antenna or signal source.
+2. Tune to a known channel, for example channel 13 at 473.142857 MHz.
+3. Confirm that lock status changes correctly when a valid signal is applied and removed.
+4. Capture a transport stream.
+5. Validate 188-byte packet alignment, sync bytes (`0x47`), continuity counters, PAT/PMT and service information with TSDuck or equivalent tools.
+6. Run a sustained capture and check for USB errors, dropped packets and successful stop/start recovery.
 
-Even if the driver compiles and loads, these issues are likely without verification:
+## Safety and licensing notes
 
-- **Wrong register offsets** — writes hit non-existent or unrelated registers.
-- **Wrong data widths** — 16-bit vs 32-bit vs 8-bit mismatches.
-- **Missing initialization steps** — hardware requires a specific sequence not captured here.
-- **Wrong tuner control** — the integrated tuner may need I2C commands we haven't discovered.
-- **Firmware corruption** — if the segmented transfer uses wrong request IDs or offsets, the device won't function even if it re-enumerates.
-- **Timing issues** — delays between steps may be critical.
+- Do not run the protocol explorer's write scan against unknown vendor requests on the physical tuner.
+- A warm USB ID alone does not prove that the firmware image is correct.
+- An apparent lock bit does not prove valid MPEG-TS reception.
+- The firmware binary's redistribution rights remain a separate licensing question; the repository's MIT license does not automatically license third-party firmware.
 
 ## Conclusion
 
-This repository is a **starting point**, not a working driver. It documents a best-effort reverse engineering attempt but needs hardware verification before it can be trusted.
+This branch is a source-level corrective pass, not a verified Linux driver release. A target-kernel build, Windows USB protocol capture and physical reception test are still required before calling the driver functional.
