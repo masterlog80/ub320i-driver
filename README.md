@@ -1,264 +1,175 @@
-# KWorld UB320-i (ASV5211) Linux ISDB-T ONE SEG Driver
+# KWorld UB320-i (ASV5211) Linux DVB Driver
 
-Linux support for the **KWorld UB320-i** USB TV tuner, an **AsicEn ASV5211**-based ISDB-T ONE SEG receiver designed for the Japanese digital television market.
+Experimental Linux support for the KWorld UB320-i Japanese ISDB-T ONE SEG USB tuner.
 
-> **Experimental:** the driver and USB protocol have not yet been verified against physical hardware. See [VERIFICATION.md](VERIFICATION.md) before attempting installation.
+> **Status: not yet working or hardware-verified.** PR #1 corrected the Linux DVB-USB integration and build process. The Windows driver package confirms the bootloader firmware-transfer parameters, but it also exposed an important mismatch in the Linux prototype's operational USB-control protocol. The first goal is to build the module and collect reliable device logs—not to expect TV reception yet.
 
-## Hardware
+## Current findings
 
-| Property | Value |
-|---|---|
-| Device | KWorld ISDB-T UB320-i / ONE SEG TV Tuner |
-| Chipset | AsicEn ASV5211 (integrated tuner + demodulator) |
-| USB IDs (bootloader) | `1738:5211` |
-| USB IDs (operational) | `1b80:b320` |
-| Standard | Japan ISDB-T (ONE SEG / mobile) |
-| Japanese UHF channel range | 473.142857-707.142857 MHz (channels 13-52) |
-| Bandwidth | 6 MHz |
+### Confirmed from the supplied Windows driver package
 
-## Repository Layout
+- Bootloader USB ID: `1738:5211`
+- Operational USB ID: `1b80:b320`
+- The Windows loader binary contains four firmware transfers:
 
-```
-ub320i-driver/
-├── README.md                    ← You are here
-├── VERIFICATION.md              ← Verification status & testing procedure
-├── driver/
-│   ├── asv5211.c                ← Kernel module source (5.4.x)
-│   ├── Makefile                 ← Out-of-tree build
-│   └── 90-ub320i.rules          ← udev rules
-├── firmware/
-│   └── ub320i.fw                ← Binary firmware (16 KB)
-├── load_firmware.py             ← Standalone firmware loader
-├── ub320i_driver.py             ← Userspace ISDB-T driver (PyUSB)
-└── ub320i_explore.py            ← Protocol exploration tool
-```
+  | Request | Offset (`wValue`) | Length | `wIndex` |
+  |---|---:|---:|---:|
+  | `0xAB` | `0x0000` | `0x0C00` | `0x55DC` |
+  | `0xAB` | `0x2000` | `0x0400` | `0x55DC` |
+  | `0xAB` | `0x2800` | `0x1000` | `0x55DC` |
+  | `0xAC` | `0x3800` | `0x0800` | `0x55DC` |
 
----
+  This is confirmation from static disassembly of `AS11Loader.sys`, not a live USB capture. The supplied Windows ZIP did not include a standalone firmware image, so `firmware/ub320i.fw` has not been compared byte-for-byte with the Windows firmware payload.
 
-## Quick Start (On-Target)
+### Still unknown — the main work remaining
 
-These commands run on the target device (e.g., BPI-M4 Berry with kernel `5.4.125-legacy-sunxi64`).
+The Linux prototype currently assumes register control requests `0x90` (OUT) and `0x91` (IN), a set of register addresses, and a simple initialization sequence. Static analysis of one operational control path in the Windows `KWORLD_UB320i.sys` instead shows vendor request `0x14`, with a command encoded in `wValue` and a two-byte IN response containing a status byte.
 
-### 1. Install prerequisites
+This is evidence that the current Linux operational protocol is incomplete or incorrect. It is **not** enough to translate the entire Windows protocol: the command meanings and full initialization/tuning sequence have not yet been established.
 
-```bash
-sudo pip3 install pyusb
-sudo apt-get install build-essential kmod
-```
+The following are therefore still unverified:
 
-### 2. Copy firmware
+- Register requests, register addresses, and data widths used by the Linux prototype
+- Device initialization and channel-tuning sequence
+- Signal/lock status bit and statistics
+- USB streaming endpoint(s)
+- MPEG-TS packet format and sustained reception
+- Kernel build and operation on the target hardware
+
+The Japanese ISDB-T UHF channel raster used by the project is channels 13–52, starting at 473.142857 MHz with 6 MHz spacing. This frequency plan does not prove that the tuner protocol is correct.
+
+## Next steps: test and collect evidence
+
+Follow these steps in order. **Do not start with channel scanning or blind register experiments.** First establish whether the module builds, whether the device changes from its cold to warm USB ID, and whether Linux registers a DVB frontend.
+
+### 1. Prepare the target
+
+Run these commands on the Linux device that will host the tuner:
 
 ```bash
-sudo cp firmware/ub320i.fw /lib/firmware/dvb-usb-asv5211.fw
-```
-
-### 3. Install udev rules
-
-```bash
-sudo cp driver/90-ub320i.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
-
-### 4. Build the kernel module
-
-The driver uses `dvb_usb.h`, an **internal kernel header** located at
-`drivers/media/usb/dvb-usb-v2/dvb_usb.h`. Build against a configured kernel
-build tree matching the target kernel. If that internal header is not present
-in the build directory, supply the matching full kernel source tree.
-
-```bash
-cd driver
-
-# Build for the currently running kernel
-make KDIR=/lib/modules/$(uname -r)/build
-
-# If source and configured build directories are separate
-make KDIR=/path/to/configured-kernel-build \
-     KERNEL_SRC=/path/to/matching/kernel-source
-```
-
-You can alternatively build from the repository root:
-
-```bash
-./build_dvb.sh --kdir /lib/modules/$(uname -r)/build \
-    --kernel-src /path/to/matching/kernel-source
-```
-
-The target kernel must already provide the DVB-USB v2 framework and its
-exported symbols. This builds the driver as an external module; it does not
-build or replace the kernel media subsystem.
-
-### 5. Install and load
-
-```bash
-cd driver
-sudo make install KDIR=/lib/modules/$(uname -r)/build \
-     KERNEL_SRC=/path/to/matching/kernel-source
-sudo modprobe asv5211
-```
-
-Alternatively, add `--install` to `build_dvb.sh` to install the module and
-firmware after building.
-
-### 6. Plug in the device and verify
-
-```bash
-# Insert the UB320-i, then check:
-dmesg | tail -20
-# Look for: "KWorld UB320-i ASV5211 ISDB-T (ONE SEG) detected"
-
-# Verify device nodes
-ls -la /dev/dvb/adapter0/
-# Expected: frontend0  demux0  dvr0  net0
-
-# Check USB state
-lsusb | grep -E '1b80|1738'
-# Expected: 1b80:b320 (warm/operational)
-```
-
-If you see `1738:5211` (cold/bootloader), check that `/lib/firmware/dvb-usb-asv5211.fw` exists and inspect firmware-loading messages in `dmesg`. The kernel driver is intended to bind to the cold USB ID, download firmware, and wait for re-enumeration as `1b80:b320`.
-
-### 7. Add your user to the `video` group
-
-```bash
-sudo usermod -aG video $USER
-```
-
-Log out and back in for the group change to take effect.
-
-### 8. Use with standard DVB applications
-
-```bash
-# Check frontend status
-dvb-fe-tool -S -a 0
-
-# Scan channels (Japan ISDB-T; use a channel list matching your region)
-scan -a 0 -t ISDBT /usr/share/dvb/isdbt/channels-Japan > ~/.tzap/channels.conf
-
-# Watch a channel
-tvtime -a 0
-vlc dvb://frequency=473142857:delivery-system=ISDBT:bandwidth=6
-mpv dvb://frequency=473142857:delivery-system=ISDBT:bandwidth=6
-
-# Or manually tune to a known frequency:
-dvb-fe-tool -S -a 0 -f 473142857
-
-# Capture 30 seconds of raw transport stream
-timeout 30 dd if=/dev/dvb/adapter0/dvr0 bs=188 count=10000 of=test.ts
-
-# Check for valid MPEG-TS sync bytes (0x47) at every 188-byte boundary:
-xxd test.ts | head -20
-```
-
----
-
-## Userspace Driver (Alternative)
-
-If you cannot compile the kernel module, the Python userspace driver works without kernel modifications:
-
-```bash
-sudo pip3 install pyusb
-sudo python3 load_firmware.py firmware/ub320i.fw   # Load firmware if device is cold
-sudo python3 ub320i_driver.py --channel 13 --output channel-13.ts  # Receive channel 13
-```
-
----
-
-## Hardware Testing Guide
-
-### Getting the driver onto the target
-
-**Option A — Clone directly on the device:**
-
-```bash
+sudo apt-get update
+sudo apt-get install build-essential bc kmod usbutils
 git clone https://github.com/masterlog80/ub320i-driver.git
 cd ub320i-driver
 ```
 
-**Option B — Push from a development machine:**
+Build against the kernel that is actually running on this device. Do not use headers or source from a different kernel release.
+
+### 2. Build and install the module
+
+First try the configured build directory for the running kernel:
 
 ```bash
-rsync -avz --exclude=.git -e "ssh -i ~/.ssh/id_key" \
-  ub320i-driver/ lorenzo@192.168.10.3:ub320i-driver/
+set -o pipefail
+KDIR="/lib/modules/$(uname -r)/build"
+./build_dvb.sh --kdir "$KDIR" --install 2>&1 | tee build.log
 ```
 
-### Expected results
+The driver also needs the internal kernel header:
 
-| Check | Expected | Not working |
-|---|---|---|
-| `dmesg` | "KWorld UB320-i ... detected" | "No such device" or errors |
-| `/dev/dvb/adapter0/frontend0` | Exists | Missing — module not loaded |
-| `lsusb` | `1b80:b320` | `1738:5211` — firmware not loaded |
-| `dvb-fe-tool -S` | Reports lock status | "Device or resource busy" |
-| `test.ts` | Sync byte `0x47` every 188 bytes | Random garbage or empty |
+`drivers/media/usb/dvb-usb-v2/dvb_usb.h`
 
-### Troubleshooting
+If the build reports that this header is missing from `KDIR`, provide the **matching full kernel source tree**:
 
 ```bash
-# Module errors:
-dmesg | grep -i asv5211
-
-# Permission denied:
-sudo usermod -aG video lorenzo
-
-# Reload module:
-sudo rmmod asv5211 && sudo modprobe asv5211
-
-# Reload udev:
-sudo udevadm control --reload-rules && sudo udevadm trigger
-
-# /dev/dvb/adapter0/frontend0 missing:
-lsmod | grep asv5211
-dmesg | grep -i dvb
-sudo udevadm control --reload-rules
-sudo udevadm trigger --subsystem-match=dvb
-
-# Module parameter: frequency offset
-# If a known Japanese UHF channel does not lock, first confirm the channel
-# number and centre frequency (channel 13 is 473.142857 MHz; channels are
-# spaced 6 MHz apart). A small hardware-specific offset can be supplied with:
-sudo modprobe asv5211 freq_offset=50   # Shift by +50 kHz
-echo "options asv5211 freq_offset=50" | sudo tee /etc/modprobe.d/asv5211.conf
-
-# Ensure module loads at boot:
-echo "asv5211" | sudo tee /etc/modules-load.d/asv5211.conf
+./build_dvb.sh \
+    --kdir "$KDIR" \
+    --kernel-src /path/to/matching/kernel/source \
+    --install 2>&1 | tee build.log
 ```
 
----
+The source tree must match `uname -r` and the configured kernel build tree. The script builds and installs the external module, copies the repository firmware to `/lib/firmware/dvb-usb-asv5211.fw`, and runs `depmod`.
 
-## Protocol Reference
+Keep `build.log`. If the build fails, stop here and send that file together with the kernel version and the complete error.
 
-The ASV5211 communicates via USB control and bulk transfers:
+### 3. Load the driver and record the first USB connection
 
-| Transfer | Direction | Endpoint | Purpose |
-|---|---|---|---|
-| Register write | OUT | Ctrl (0x90) | Write chip registers |
-| Register read | IN | Ctrl (0x91) | Read chip registers |
-| TS data | IN | Bulk 0x81 | 188-byte MPEG-TS packets |
-| Status | IN | Bulk 0x82 | Tuner status updates |
+With the tuner unplugged, create a test folder and start the live kernel log in **Terminal A**:
 
-Firmware loading uses segmented control transfers to the bootloader (`1738:5211`), after which the device re-enumerates as the operational device (`1b80:b320`).
+```bash
+mkdir -p "$HOME/ub320i-test"
+sudo dmesg -wT | tee "$HOME/ub320i-test/dmesg-live.txt"
+```
 
----
+In **Terminal B**, load the module:
 
-## Known Targets
+```bash
+sudo modprobe asv5211
+```
 
-- **BPI-M4 Berry** (Banana Pi) — intended target: Armbian kernel `5.4.125-legacy-sunxi64`
-- Other architectures/kernels require a matching configured kernel build tree and compatibility verification
+If that command succeeds, plug in the UB320-i. Leave the log running for about 20 seconds, then press **Ctrl+C** in Terminal A. If `modprobe` fails, keep the error and the live log; do not continue to tuning.
 
-## Reverse Engineering Sources
+The kernel driver should request `dvb-usb-asv5211.fw` when it sees the cold device (`1738:5211`). The firmware loader code then requests USB re-enumeration; the expected operational ID is `1b80:b320`.
 
-- Windows BDA drivers: `KWORLD_UB320i.sys`, `AS11Loader.sys`
-- Python userspace drivers in this repository
-- Windows INF files in `Driver_UB320i_V1.09.10.26.091026/`
+### 4. Record what Linux detected
+
+Run the following commands after plugging in the tuner:
+
+```bash
+OUT="$HOME/ub320i-test"
+uname -a > "$OUT/system.txt"
+uname -r >> "$OUT/system.txt"
+lsusb -nn > "$OUT/lsusb.txt"
+lsusb -t > "$OUT/lsusb-tree.txt"
+lsmod | grep -E 'asv5211|dvb_usb' > "$OUT/modules.txt" || true
+modinfo asv5211 > "$OUT/modinfo.txt" 2>&1 || true
+sudo dmesg -T > "$OUT/dmesg-full.txt"
+
+for id in 1738:5211 1b80:b320; do
+    sudo lsusb -v -d "$id" > "$OUT/usb-$id.txt" 2>&1 || true
+done
+
+find /dev/dvb -maxdepth 3 -ls > "$OUT/dvb-devices.txt" 2>&1 || true
+dvb-fe-tool -a 0 > "$OUT/dvb-fe-tool.txt" 2>&1 || true
+
+tar -czf "$HOME/ub320i-test.tar.gz" -C "$HOME" ub320i-test
+```
+
+If `dvb-fe-tool` is not installed, install `v4l-utils` and run that command again. At this stage it is only a frontend enumeration/capability check; it does not prove that tuning or reception works.
+
+### 5. Check the initial result
+
+| Observation | What it tells us |
+|---|---|
+| Build creates `driver/asv5211.ko` | The source compiled for this kernel |
+| Device appears as `1738:5211` and then `1b80:b320` | Firmware transfer completed far enough for USB re-enumeration |
+| `/dev/dvb/adapter0/frontend0` appears | The Linux DVB frontend registered |
+| USB errors, repeated disconnects, or no warm ID | Firmware/probe path needs investigation |
+| Warm ID appears but no DVB frontend | Operational probe or frontend registration needs investigation |
+
+A successful build, warm USB ID, or frontend node does **not** prove that the current register protocol, tuning, lock detection, or transport stream works.
+
+For this first test, do not run channel scans, sustained stream captures, or `ub320i_explore.py` write experiments. The operational commands are not yet sufficiently understood. Once we have the initial logs and a Windows trace, we can correct the protocol before attempting reception.
+
+### 6. Capture the working Windows protocol
+
+The next essential evidence is a USB capture from the official Windows driver:
+
+1. On Windows, install/use Wireshark with USBPcap available.
+2. Start USBPcap capture on the USB controller used by the tuner **before** plugging it in.
+3. Plug in the UB320-i and let the official driver load the firmware.
+4. Open the KWorld TV application, tune to a channel that is known to receive at your location, start viewing for 20–30 seconds, then stop.
+5. Save the capture as a `.pcapng` file.
+
+The capture should include the cold-device firmware upload, operational initialization, channel tuning, stream start, data transfers, and stream stop. This will let us map the real request type, request, value, index, payload, lengths and streaming endpoints instead of guessing from the partial static disassembly.
+
+## What to send for the next fix
+
+Please provide:
+
+1. `build.log` (or the complete build error)
+2. `ub320i-test.tar.gz`
+3. The Windows USBPcap `.pcapng` capture, when available
+4. The channel/frequency tested and whether the KWorld application successfully received it on Windows
+
+These files will let us work through the next fixes in evidence-based order: firmware/probe, operational control requests, initialization, tuning/lock detection, then transport-stream reception.
+
+## Hardware target
+
+The original target for this project is the BPI-M4 Berry running Armbian. Always build against the actual kernel running on the target; other boards and kernel versions need their own build and compatibility checks.
 
 ## License
 
-Kernel driver: GPL-2.0-or-later
-Userspace scripts: MIT
-Firmware binary: © KWorld — included for personal use only
-
-## Credits
-
-Driver developed through reverse engineering by the OpenClaw Community.
+- Kernel driver: GPL-2.0-or-later
+- Userspace scripts: MIT
+- Firmware: © KWorld; included for personal use only
