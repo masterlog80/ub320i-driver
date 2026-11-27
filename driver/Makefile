@@ -14,6 +14,12 @@
 # e.g. KERNEL_SRC=~/dvb-driver-build
 
 
+# Derive the kernel release from KDIR so `make install KDIR=...` targets
+# the correct kernel even when cross-compiling or building for a non-running
+# kernel.  E.g. KDIR=/lib/modules/5.4.125-legacy-sunxi64/build
+# -> KBUILD_KERNEL=5.4.125-legacy-sunxi64
+KBUILD_KERNEL := $(shell basename $(patsubst %/,%,$(KDIR)))
+
 KDIR ?= /lib/modules/$(shell uname -r)/build
 KERNEL_SRC ?= $(KDIR)
 obj-m := asv5211.o
@@ -33,9 +39,9 @@ clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 
 install: modules firmware-copy
-	install -d /lib/modules/$(shell uname -r)/kernel/drivers/media/usb/dvb-usb-v2
-	install -m 0644 asv5211.ko /lib/modules/$(shell uname -r)/kernel/drivers/media/usb/dvb-usb-v2/
-	depmod -a
+	install -d /lib/modules/$(KBUILD_KERNEL)/kernel/drivers/media/usb/dvb-usb-v2
+	install -m 0644 asv5211.ko /lib/modules/$(KBUILD_KERNEL)/kernel/drivers/media/usb/dvb-usb-v2/
+	depmod -ae $(KBUILD_KERNEL)
 
 # Copy firmware to the right place for the driver's request_firmware()
 firmware-copy:
