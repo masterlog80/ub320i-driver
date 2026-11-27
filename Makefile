@@ -1,11 +1,11 @@
 .PHONY: install setup scan clean
 
 PREFIX ?= /usr/local
-FW_FILE = ub320i.fw
+FW_FILE = firmware/ub320i.fw
 
 # Install udev rules and set permissions
 install-rules:
-	sudo cp rules/99-ub320i.rules /etc/udev/rules.d/
+	sudo cp driver/90-ub320i.rules /etc/udev/rules.d/
 	sudo udevadm control --reload-rules
 	sudo udevadm trigger
 	@echo "udev rules installed. Replug the USB device."

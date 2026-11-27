@@ -108,8 +108,8 @@ If you cannot compile the kernel module, the Python userspace driver works witho
 
 ```bash
 sudo pip3 install pyusb
-sudo python3 load_firmware.py      # Load firmware if device is cold
-sudo python3 ub320i_driver.py      # Start receiving
+sudo python3 load_firmware.py firmware/ub320i.fw   # Load firmware if device is cold
+sudo python3 ub320i_driver.py                      # Start receiving
 ```
 
 ## Known Targets

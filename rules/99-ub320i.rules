@@ -2,7 +2,10 @@
 # Allows non-root access after firmware is loaded
 
 # Bootloader mode (before firmware load - needs root)
-SUBSYSTEM=="usb", ATTR{idVendor}=="1738", ATTR{idProduct}=="5211", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1738", ATTR{idProduct}=="5211", MODE="0660", GROUP="video"
 
 # Operational mode (after firmware load)
-SUBSYSTEM=="usb", ATTR{idVendor}=="1b80", ATTR{idProduct}=="b320", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1b80", ATTR{idProduct}=="b320", MODE="0660", GROUP="video", ENV{ID_DVB_DEVICE}="1"
+
+# DVB adapter devices
+SUBSYSTEM=="dvb", KERNEL=="*", MODE="0660", GROUP="video"
