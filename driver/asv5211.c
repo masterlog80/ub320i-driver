@@ -263,7 +263,7 @@ static int asv5211_download_firmware(struct dvb_usb_device *d,
 	}
 
 	dev_info(&d->intf->dev, "firmware download complete\n");
-	return 0;
+	return RECONNECTS_USB;
 }
 
 /* ------------------------------------------------------------------ */
@@ -273,8 +273,15 @@ static int asv5211_download_firmware(struct dvb_usb_device *d,
 static int asv5211_identify_state(struct dvb_usb_device *d,
 				  const char **firmware)
 {
-	/* Only binds to warm device (1b80:b320). Firmware already loaded.
-	 * Return WARM so the framework skips re-downloading. */
+	/* Check if we are in cold (bootloader) or warm (firmware loaded) state.
+	 * Cold = 1738:5211 (needs firmware download)
+	 * Warm = 1b80:b320 (firmware already loaded) */
+	if (le16_to_cpu(d->udev->descriptor.idVendor) == USB_VID_ASICEN_COLD &&
+	    le16_to_cpu(d->udev->descriptor.idProduct) == USB_PID_ASICEN_COLD) {
+		*firmware = "dvb-usb-asv5211.fw";
+		return COLD;
+	}
+
 	*firmware = NULL;
 	return WARM;
 }
