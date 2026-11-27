@@ -13,12 +13,17 @@
  * Device arrives in bootloader mode (1738:5211), loads firmware, then
  * re-enumerates as operational device (1b80:b320).
  *
- * Protocol summary:
- *   Firmware load: segmented control transfers to bootloader (1738:5211)
- *   Register write: ctrl_transfer(0x40, 0x90, reg_addr, 0, data)
- *   Register read:  ctrl_transfer(0xC0, 0x91, reg_addr, 0, len)
- *   TS data:        bulk IN on endpoint 0x81 (188-byte MPEG-TS packets)
- *   Status:         bulk IN on endpoint 0x82
+ * Protocol status (see README.md):
+ *   Firmware transfer: segment requests, offsets, lengths and wIndex are
+ *     confirmed by static disassembly of the bundled Windows AS11Loader.sys.
+ *   Operational register access: request codes 0x90/0x91 and the register
+ *     map below remain prototype assumptions. They do not match at least
+ *     one control-request path observed in KWORLD_UB320i.sys.
+ *   TS endpoint 0x81, status endpoint 0x82 and 188-byte framing are not
+ *     confirmed against the Windows driver or a live USB capture.
+ *
+ * Do not treat this prototype's register map or stream configuration as
+ * hardware-verified.
  *
  * Copyright (C) 2024 OpenClaw Community
  */
@@ -62,11 +67,11 @@ MODULE_PARM_DESC(adapter_nr, "Override the adapter number (default = -1)");
 #define USB_PID_ASICEN_WARM   0xb320	/* Operational product */
 
 /* ------------------------------------------------------------------ */
-/* Firmware loading constants (from load_firmware.py)                  */
+/* Firmware transfer constants confirmed against Windows loader code    */
 /* ------------------------------------------------------------------ */
 
 #define ASV5211_FW_SIZE		0x4000
-#define ASV5211_FW_W_INDEX	0x55DC
+#define ASV5211_FW_W_INDEX	0x55DC	/* Confirmed by Windows loader */
 
 struct asv5211_fw_seg {
 	u16 offset;
@@ -83,7 +88,7 @@ static const struct asv5211_fw_seg asv5211_fw_segments[] = {
 #define ASV5211_FW_SEGMENTS	ARRAY_SIZE(asv5211_fw_segments)
 
 /* ------------------------------------------------------------------ */
-/* Register addresses (from ub320i_driver.py reverse engineering)      */
+/* Prototype register addresses; not corroborated by Windows analysis */
 /* ------------------------------------------------------------------ */
 
 #define ASV5211_REG_TUNER_FREQ		0x0010
@@ -97,7 +102,7 @@ static const struct asv5211_fw_seg asv5211_fw_segments[] = {
 #define ASV5211_REG_OUTPUT_CONTROL	0x0040
 #define ASV5211_REG_TS_PID_FILTER	0x0044
 
-/* Control transfer request types */
+/* Prototype request codes; not corroborated by observed Windows path */
 #define ASV5211_REQ_WRITE_REG		0x90
 #define ASV5211_REQ_READ_REG		0x91
 
@@ -116,7 +121,7 @@ static const struct asv5211_fw_seg asv5211_fw_segments[] = {
 #define ASV5211_STATUS_LOCKED		0x01
 
 /* ------------------------------------------------------------------ */
-/* USB endpoints                                                       */
+/* Prototype endpoints; not yet confirmed from Windows USB traffic     */
 /* ------------------------------------------------------------------ */
 
 #define ASV5211_EP_TS_IN		0x81	/* MPEG-TS bulk IN */
