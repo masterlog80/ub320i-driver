@@ -1,55 +1,38 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Makefile for out-of-tree build of asv5211 DVB-USB driver
-# Target kernel: 5.4.x (e.g. 5.4.125-legacy-sunxi64 on BPI-M4 Berry)
+# Out-of-tree build for the ASV5211 DVB-USB v2 driver.
 #
-# Usage:
-#   make KDIR=/lib/modules/$(uname -r)/build
-#   sudo make install KDIR=/lib/modules/$(uname -r)/build
+# KDIR       Configured kernel build directory (generated headers + Module.symvers).
+# KERNEL_SRC Matching kernel source tree containing drivers/media/usb/
+#            dvb-usb-v2/dvb_usb.h. It can be the same path as KDIR.
 #
-# NOTE: dvb_usb.h is an INTERNAL kernel header under
-#   <src>/drivers/media/usb/dvb-usb-v2/dvb_usb.h
-# The -I flag below tells the compiler where to find it.
-# On the target, set KERNEL_SRC to your kernel source tree root,
-# e.g. KERNEL_SRC=~/dvb-driver-build
-
-
-# Derive the kernel release from KDIR so `make install KDIR=...` targets
-# the correct kernel even when cross-compiling or building for a non-running
-# kernel.  E.g. KDIR=/lib/modules/5.4.125-legacy-sunxi64/build
-# -> KBUILD_KERNEL=5.4.125-legacy-sunxi64
-KBUILD_KERNEL := $(shell basename $(patsubst %/,%,$(KDIR)))
+# Example:
+#   make KDIR=/lib/modules/$(uname -r)/build KERNEL_SRC=/usr/src/linux
+#   sudo make install KDIR=/lib/modules/$(uname -r)/build KERNEL_SRC=/usr/src/linux
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 KERNEL_SRC ?= $(KDIR)
+
 obj-m := asv5211.o
 FW_NAME := dvb-usb-asv5211.fw
-
-# Internal header path — dvb_usb.h is NOT in uapi or public includes
 DVB_USB_INTERNAL := $(KERNEL_SRC)/drivers/media/usb/dvb-usb-v2
+KERNELRELEASE := $(shell $(MAKE) -s -C "$(KDIR)" kernelrelease 2>/dev/null)
 
-.PHONY: all clean install modules firmware-copy
+.PHONY: all modules clean modules_install install firmware-copy
 
 all: modules
 
 modules:
-	$(MAKE) -C $(KDIR) M=$(PWD) EXTRA_CFLAGS="-I$(DVB_USB_INTERNAL)" modules
+	$(MAKE) -C "$(KDIR)" M="$(CURDIR)" EXTRA_CFLAGS="-I$(DVB_USB_INTERNAL)" modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C "$(KDIR)" M="$(CURDIR)" clean
 
-install: modules firmware-copy
-	install -d /lib/modules/$(KBUILD_KERNEL)/kernel/drivers/media/usb/dvb-usb-v2
-	install -m 0644 asv5211.ko /lib/modules/$(KBUILD_KERNEL)/kernel/drivers/media/usb/dvb-usb-v2/
-	depmod -ae $(KBUILD_KERNEL)
+modules_install: modules
+	$(MAKE) -C "$(KDIR)" M="$(CURDIR)" INSTALL_MOD_DIR=updates modules_install
 
-# Copy firmware to the right place for the driver's request_firmware()
 firmware-copy:
-	@if [ -f $(CURDIR)/../firmware/ub320i.fw ]; then \
-		install -d /lib/firmware; \
-		install -m 0644 $(CURDIR)/../firmware/ub320i.fw /lib/firmware/$(FW_NAME); \
-		echo "Firmware copied to /lib/firmware/$(FW_NAME)"; \
-	else \
-		echo "Firmware not found at ../firmware/ub320i.fw"; \
-		echo "Place ub320i.fw in ../firmware/ or copy it manually to /lib/firmware/$(FW_NAME)"; \
-	fi
+	install -D -m 0644 "$(CURDIR)/../firmware/ub320i.fw" "/lib/firmware/$(FW_NAME)"
+
+install: modules_install firmware-copy
+	depmod -a "$(KERNELRELEASE)"
