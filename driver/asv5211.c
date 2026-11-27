@@ -153,8 +153,14 @@ static int asv5211_write_regs(struct dvb_usb_device *d,
 		dev_err(&d->intf->dev,
 			"write_regs failed: reg=0x%04x len=%d err=%d\n",
 			reg, len, rc);
+	else if ((u16)rc < len) {
+		dev_warn(&d->intf->dev,
+			 "short write: reg=0x%04x wanted=%d got=%d\n",
+			 reg, len, rc);
+		return -EIO;
+	}
 
-	return rc < 0 ? rc : 0;
+	return 0;
 }
 
 static int asv5211_read_regs(struct dvb_usb_device *d,
