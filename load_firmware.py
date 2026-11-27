@@ -12,6 +12,11 @@ import argparse
 import sys
 import time
 
+try:
+    import usb.core
+except ImportError:
+    usb = None
+
 COLD = (0x1738, 0x5211)
 WARM = (0x1B80, 0xB320)
 IMAGE_SIZE = 0x4000
@@ -35,7 +40,7 @@ def send(dev, transfers, log=print):
             written = dev.ctrl_transfer(bm, req, value, index, data, timeout=5000)
         except usb.core.USBError as e:
             if last_segment:
-                log(f"  Warning: USB error on final segment (device may already be re-enumerating): {e}")
+                log(f"  Final segment reported a USB error; operational-device re-enumeration will be checked: {e}")
                 return  # Re-enumeration will be verified after
             raise IOError(f"USB error on segment {n}/{len(transfers)}: {e}")
         if written != len(data):
@@ -58,7 +63,10 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="print the transfers, send nothing")
     ap.add_argument("--wait", type=float, default=10, help="seconds to wait for 1b80:b320 afterwards")
     args = ap.parse_args(argv)
-    image = open(args.firmware, "rb").read()
+    if args.wait <= 0:
+        ap.error("--wait must be greater than zero")
+    with open(args.firmware, "rb") as firmware_file:
+        image = firmware_file.read()
     transfers = plan(image)
     if args.dry_run:
         for bm, req, value, index, data in transfers:
@@ -66,7 +74,9 @@ def main(argv=None):
         print("dry run: nothing sent")
         return 0
 
-    import usb.core
+    if usb is None:
+        print("Error: pyusb required. Install with: pip3 install pyusb", file=sys.stderr)
+        return 1
     if usb.core.find(idVendor=WARM[0], idProduct=WARM[1]) is not None:
         print("A 1b80:b320 device is already present: firmware is loaded.")
         return 0
