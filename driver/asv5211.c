@@ -422,8 +422,10 @@ static int asv5211_get_stream_config(struct dvb_frontend *fe,
 
 static int asv5211_fe_init(struct dvb_frontend *fe)
 {
-	struct dvb_usb_device *d = fe_to_d(fe);
-	return asv5211_init_device(d);
+	/* power_ctrl() already calls asv5211_init_device() on power-on.
+	 * The framework calls fe_init after frontend_attach, so init
+	 * has already run. Return 0 to avoid double-initialization. */
+	return 0;
 }
 
 static int asv5211_fe_sleep(struct dvb_frontend *fe)
@@ -499,19 +501,16 @@ static int asv5211_fe_read_status(struct dvb_frontend *fe,
 	rc = asv5211_read_reg32(d, ASV5211_REG_DEMOD_STATUS, &raw_status);
 	if (rc != 4) {
 		dev_dbg(&d->intf->dev, "status read failed: %d\n", rc);
-		*status = FE_HAS_SIGNAL;
 		goto out;
 	}
 
 	dev_dbg(&d->intf->dev,
 		"read_status: raw=0x%08x\n", raw_status);
 
-	/* Always report signal present (tuner is always on) */
-	*status = FE_HAS_SIGNAL;
-
 	if (raw_status & ASV5211_STATUS_LOCKED) {
-		*status |= FE_HAS_CARRIER | FE_HAS_LOCK;
+		*status = FE_HAS_SIGNAL | FE_HAS_CARRIER | FE_HAS_LOCK;
 	}
+	/* else *status stays 0 — no signal */
 
 out:
 	mutex_unlock(&st->lock);
@@ -525,12 +524,14 @@ static int asv5211_fe_read_ber(struct dvb_frontend *fe, u32 *ber)
 	u32 val = 0;
 
 	mutex_lock(&st->lock);
-	asv5211_read_reg32(d, ASV5211_REG_DEMOD_BER, &val);
+	rc = asv5211_read_reg32(d, ASV5211_REG_DEMOD_BER, &val);
 	mutex_unlock(&st->lock);
+
+	if (rc != 4)
+		return rc;
 
 	*ber = val;
 	return 0;
-}
 
 static int asv5211_fe_read_signal_strength(struct dvb_frontend *fe,
 					   u16 *strength)
@@ -540,12 +541,14 @@ static int asv5211_fe_read_signal_strength(struct dvb_frontend *fe,
 	u32 val = 0;
 
 	mutex_lock(&st->lock);
-	asv5211_read_reg32(d, ASV5211_REG_DEMOD_SIGNAL, &val);
+	rc = asv5211_read_reg32(d, ASV5211_REG_DEMOD_SIGNAL, &val);
 	mutex_unlock(&st->lock);
+
+	if (rc != 4)
+		return rc;
 
 	*strength = (val > 65535) ? 65535 : (u16)val;
 	return 0;
-}
 
 static int asv5211_fe_read_snr(struct dvb_frontend *fe, u16 *snr)
 {
@@ -554,12 +557,14 @@ static int asv5211_fe_read_snr(struct dvb_frontend *fe, u16 *snr)
 	u32 val = 0;
 
 	mutex_lock(&st->lock);
-	asv5211_read_reg32(d, ASV5211_REG_DEMOD_SNR, &val);
+	rc = asv5211_read_reg32(d, ASV5211_REG_DEMOD_SNR, &val);
 	mutex_unlock(&st->lock);
+
+	if (rc != 4)
+		return rc;
 
 	*snr = (val > 65535) ? 65535 : (u16)val;
 	return 0;
-}
 
 /* ------------------------------------------------------------------ */
 /* Frontend ops table                                                  */
