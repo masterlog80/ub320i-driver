@@ -28,11 +28,18 @@ def plan(image):
 
 def send(dev, transfers, log=print):
     for n, (bm, req, value, index, data) in enumerate(transfers, 1):
+        last_segment = (n == len(transfers))
         log(f"  [{n}/{len(transfers)}] bmRequestType={bm:#04x} bRequest={req:#04x} wValue={value:#06x} "
             f"wIndex={index:#06x} len={len(data):#06x}")
-        written = dev.ctrl_transfer(bm, req, value, index, data, timeout=5000)
+        try:
+            written = dev.ctrl_transfer(bm, req, value, index, data, timeout=5000)
+        except usb.core.USBError as e:
+            if last_segment:
+                log(f"  Warning: USB error on final segment (device may already be re-enumerating): {e}")
+                return  # Re-enumeration will be verified after
+            raise IOError(f"USB error on segment {n}/{len(transfers)}: {e}")
         if written != len(data):
-            raise IOError(f"short transfer: {written} of {len(data)} bytes")
+            raise IOError(f"short transfer on segment {n}/{len(transfers)}: {written} of {len(data)} bytes")
 
 
 def wait_for(usb_core, ids, seconds):
@@ -70,8 +77,9 @@ def main(argv=None):
     print(f"Found {COLD[0]:04x}:{COLD[1]:04x} on bus {dev.bus} address {dev.address}; sending firmware")
     try:
         send(dev, transfers)
-    except usb.core.USBError:
-        print("USB error during transfer (may be normal on last request)")
+    except IOError as e:
+        print(f"Firmware transfer failed: {e}")
+        return 1
     print(f"Waiting up to {args.wait:.0f}s for {WARM[0]:04x}:{WARM[1]:04x} ...")
     warm = wait_for(usb.core, WARM, args.wait)
     if warm is None:
